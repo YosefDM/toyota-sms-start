@@ -37,13 +37,30 @@ Host-side supervisor must:
    re-spawn if it dies.
 4. drive the app to the dashboard; re-login when the session expires (see "Session/OTP" below).
 
-## Session / OTP re-auth (the real operational risk)
+## Session / OTP re-auth (THE operational risk — confirmed)
 
-The Toyota login issues an OTP and the session will eventually expire. An unattended box can get **stuck at a
-login + OTP screen**. Plan:
-- Keep the app logged in as long as possible (don't `pm clear`, don't wipe `/data`).
-- When re-auth is needed, the OTP must reach the box. Options: route the account's OTP to an email/SMS the
-  server can read, or alert the operator to intervene. **Decide this before going truly unattended.**
+**Confirmed behavior:** the app periodically shows a server-forced *"For your security, you have been signed
+out. Sign back in to continue using the app."* and drops to `LoginActivity`. This is ForgeRock
+session/refresh-token expiry + Toyota security policy — it **will** recur on its own schedule and requires a
+re-sign-in **with an OTP**, i.e. a human in the loop. This is the single biggest limiter on unattended
+operation. (Separately: a session appears to persist across emulator/app restarts **only while the Frida
+unpinning stays attached** — if Frida detaches, the silent token-refresh TLS call fails and the app also
+drops to login. So: keep Frida persistently attached, see §Frida.)
+
+Design the re-auth path (not optional):
+1. **Detect** the signed-out state — fingerprint: `com.toyota.oneapp/.ui.LoginActivity`, texts
+   "For your security, you have been signed out" / "Sign In" / "Register". The command dispatcher must
+   check for this and **refuse to tap** (and trigger re-auth) rather than acting on the wrong screen.
+2. **Alert** the operator by SMS: "Toyota session expired — reply TOYOTA CODE <otp> to sign back in."
+3. **OTP relay**: operator receives the OTP on their phone and texts it to the Twilio number; the server
+   types email (stored), password (stored in a secret manager), then the relayed OTP into the login screens
+   (all captured in docs/UI-MAP.md). Keep credentials in a secrets store, never in the repo.
+
+Reduce the frequency:
+- **Enable "Keep me signed in"** at login (the app has a KeepMeSignedIn/biometric setting) — may extend the
+  session lifetime substantially. Tick it every time we log in.
+- Measure the actual re-auth **cadence** (days vs weeks) so alerting expectations are realistic.
+- Don't `pm clear` / wipe `/data`; don't let Frida detach.
 
 ## Twilio bridge (TODO)
 

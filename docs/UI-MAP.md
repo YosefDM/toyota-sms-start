@@ -76,13 +76,32 @@ OADashboardActivity (home)
 
 ---
 
+## Login / signed-out flow  (captured)
+
+The controller must recognize these to (a) refuse to tap car buttons when signed out and (b) drive re-auth.
+
+- **Signed-out notice** — `LoginActivity`, text *"For your security, you have been signed out…"* + `OK`.
+  (Also the generic post-signout landing below.) **This recurs on the server's schedule → re-auth needed.**
+- **Sign-In landing** — `LoginActivity`; ids `login_login_btn` (Sign In), `login_sign_up_btn` (Register),
+  region/language selectors. Tap `login_login_btn`.
+- **Email** — `FRMainActivity`; field `etName` ("Email or Mobile Number"), `btContinue`, plus `btGoogle`/`btFacebook`.
+- **Password** — `FRMainActivity`; "Enter Your Password", a Password field, **`Keep me signed in` toggle**
+  (tick it — reduces forced re-sign-in frequency), "Continue".
+- **OTP** — *conditional* (appears on a new/untrusted device or periodically; did NOT appear on a normal
+  re-login of an already-trusted device). Capture when next seen; the re-auth flow must handle it when present.
+- **Biometric / Keep-signed-in prompt** — `FRMainActivity`, "Enable Biometric Unlock" / "Keep me signed in".
+- **FTUE** — `FTUEActivity`, "Exciting news! / See What's New / Skip For Now", and a "Take a Tour" nudge.
+- **Background Location Permission** — dialog: "Confirm" / "Later" / "Don't ask me again".
+- **Logout path** — profile icon `top_nav_profile_icon` (1005,220) → "Sign Out" → confirm dialog "Sign Out".
+
 ## Screens still to capture (transient / state gates)
 
 These should each be captured so the guard can positively recognize a "do NOT tap" state:
 
 - [ ] **Sending / in-flight** — `remote_progress_text` = "Sending…" (capture during a command).
-- [ ] **Login / signed-out** — `LoginActivity` (Sign In / Register) — the "session expired" state.
-- [ ] **Onboarding dialogs** (startup): "Verified Links", "Background Location Permission".
+- [x] **Login / signed-out flow** — captured (see "Login / signed-out flow" above).
+- [ ] **OTP screen** — conditional; didn't appear on a trusted-device re-login; capture when next seen.
+- [x] **Background Location Permission** dialog — captured.
 - [ ] **Error/blocking dialogs** seen during bring-up: "Unsafe Network Detected", "Downtime", the
-      "app does not support rooted devices" kill dialog, "requires a device unlock PIN".
+      "app does not support rooted devices" kill dialog, "requires a device unlock PIN" (reproduce only if needed).
 - [x] **Advanced Remote entry point** — found: ⋯ "More Horizontal" at (902,929) on the Remote tab.
