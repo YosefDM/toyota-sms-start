@@ -1,0 +1,42 @@
+# ───────── Secrets / personal — NEVER commit ─────────
+scripts/frida/config.js          # contains your TLS-filter CA (CERT_PEM)
+scripts/frida/combined_unpin.js  # built artifact that embeds config.js
+**/*.keybox.xml
+.env
+*.pem
+*.crt
+*.cer
+*.0                              # Android hashed CA files
+secrets/
+twilio.env
+
+# ───────── 3rd-party scripts fetched at setup (see docs/SETUP.md) ─────────
+scripts/frida/android-certificate-unpinning*.js
+scripts/frida/disable-flutter-tls*.js
+
+# ───────── Large / binary / proprietary — do NOT redistribute ─────────
+*.apk
+*.apkm
+*.xapk
+*.apks
+apkeep/
+toyota_split/
+frida-server*
+Magisk*.zip
+Magisk*.apk
+*.img                            # Android system/ramdisk images
+jadxout/                         # decompiled app sources (copyrighted)
+*.so
+
+# ───────── Tooling / junk ─────────
+toyvenv*/
+*venv*/
+__pycache__/
+*.pyc
+node_modules/
+*.log
+ui.xml
+*.png                            # screenshots/dumps (may show account info)
+scratchpad/
+.DS_Store
+Thumbs.db
