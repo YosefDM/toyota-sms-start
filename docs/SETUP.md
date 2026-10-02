@@ -142,7 +142,7 @@ use a script file with set, quoted paths.
   device — the modern command; `verify --old` must say "verified successfully"). `isDeviceSecure()` then
   returns true. (`password_type=null` is a red herring on Android 15 — it's just a deprecated field.)
 
-**CA trust** — ONLY if the rig's network does TLS interception (our home network runs **Techloq**, a
+**CA trust** — ONLY if the rig's network does TLS interception (our home network runs **the content filter**, a
 content filter that MITMs all HTTPS). On an unfiltered production network you can SKIP this whole section.
 - 🧱 Android 14/15 keeps system CAs in the read-only **Conscrypt APEX**. Our first attempt bind-mounted a
   `/data/local/tmp` dir over the apex cacerts → conscrypt's `shouldUseApex` did `.list()` on a dir apps
@@ -198,7 +198,7 @@ svc data disable; svc data enable     # (or toggle wifi) to re-trigger validatio
 
 ## 8. Filter domain whitelist (only behind a content filter) 🧱
 
-Even with all of the above, specific domains were **blocked** by the filter (307/302 → `filter.techloq.com`
+Even with all of the above, specific domains were **blocked** by the filter (307/302 → `<filter-block-page>`
 block page), which no device-side trick can fix (the filter substitutes a block page for the server):
 - `login.toyotadriverslogin.com` — **blocked** → sign-in opened ForgeRock `FRMainActivity` for ~1s then
   bounced back to home. Fix: **whitelist it in the filter.**
@@ -208,7 +208,7 @@ block page), which no device-side trick can fix (the filter substitutes a block 
   `delivery.vcr.assetscs.toyota.com` (vehicle photos).
 
 Diagnose a block from the host with: `curl -sI --ssl-no-revoke https://<host>/` → a `Location:
-https://filter.techloq.com/...` header = blocked. The okhttp URL logger (`scripts/frida/okhttp_logger.js`)
+https://<filter-block-page>/...` header = blocked. The okhttp URL logger (`scripts/frida/okhttp_logger.js`)
 lists every host the app actually hits so you can build the exact minimal whitelist.
 
 ---

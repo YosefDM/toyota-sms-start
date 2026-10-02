@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # Android 14/15 system CA injection (HTTPToolkit method, adapted for API 35).
-# Trusts the Techloq intermediate CA so the emulator's TLS chain validates.
+# Trusts the content filter's intermediate CA so the emulator's TLS chain validates.
 set -u
 CERT=/data/local/tmp/6f2a8e1c.0
 SYSCA=/system/etc/security/cacerts

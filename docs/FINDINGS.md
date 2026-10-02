@@ -46,7 +46,7 @@ Stripe payment, which we never do). This is why the emulator approach is viable.
 
 ## Hosts (observed via okhttp URL logging)
 
-| Host | Role | Techloq (home filter) |
+| Host | Role | Content filter |
 |---|---|---|
 | `onecdn.telematicsct.com` | **main API** incl. `/v1/remote/route/command`, telemetry, account | ✅ ok |
 | `login.toyotadriverslogin.com` | ForgeRock sign-in | 🚫 was blocked → whitelisted |

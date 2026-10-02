@@ -1,7 +1,7 @@
 /*
  * Template for the HTTPToolkit unpinning config. Copy to config.js and fill CERT_PEM.
  * ⚠️ NEVER commit the real config.js — CERT_PEM is your TLS-filter's CA (home-network specific).
- * Only needed when the rig runs behind a TLS-intercepting filter (e.g. Techloq). On an unfiltered
+ * Only needed when the rig runs behind a TLS-intercepting filter (a TLS-intercepting content filter). On an unfiltered
  * network, skip unpinning entirely and load only toyota_bypass.js.
  *
  * Build the combined script Frida actually loads (Frida gives each -l its own scope, so these MUST
