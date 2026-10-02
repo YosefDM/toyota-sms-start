@@ -20,7 +20,35 @@ Before any tap:
 
 ---
 
-## Screen: Advanced Remote panel  (`01_dashboard`)  ✅ primary operational screen
+## Navigation path (how the controller reaches the buttons)
+
+```
+OADashboardActivity (home)
+  └─ Remote tab                 ID_TAB_REMOTE            @ (194, 728)
+       ├─ quick actions:        remote_engine_start_button (182,930)
+       │                        remote_door_lock_button    (418,930)
+       │                        remote_door_unlock_button  (654,930)
+       └─ ⋯ "More Horizontal"   (902, 929)   ──►  Advanced Remote modal (all 9 commands)
+```
+
+- **Start / Lock / Unlock** are reachable directly on the Remote tab — no modal needed.
+- **hazards / horn / lights / buzzer / lock_trunk / unlock_trunk** need the modal: tap the ⋯ "More
+  Horizontal" control at (902,929). The modal is confirmed by the anchor set in the next section.
+- `ensure_on_advanced_remote()` should: confirm `OADashboardActivity` → ensure Remote tab selected →
+  if the 9-button panel isn't already up, tap the ⋯ entry → verify the modal anchor set.
+
+## Screen: dashboard home / Remote tab  (`02_dashboard_home`)
+
+- **Activity:** `OADashboardActivity`
+- **Anchor set:** tabs `ID_TAB_REMOTE` / `ID_TAB_STATUS` / `ID_TAB_HEALTH`, `dashboard_vehicle_name`,
+  `dashboard_refresh`, and the quick buttons `remote_engine_start_button` / `remote_door_lock_button` /
+  `remote_door_unlock_button`.
+- **Quick controls:** start (182,930) · lock (418,930) · unlock (654,930) · ⋯ more (902,929).
+- Note: shows live vehicle data (name, odometer, range) — screenshots are gitignored for this reason.
+
+---
+
+## Screen: Advanced Remote panel  (`01_dashboard` / `05_advanced_remote_opened`)  ✅ primary operational screen
 
 - **Activity:** `com.toyota.oneapp/.features.dashboard.dashboard.presentation.OADashboardActivity`
 - **Anchor set (must all be present to consider this the good screen):**
@@ -57,5 +85,4 @@ These should each be captured so the guard can positively recognize a "do NOT ta
 - [ ] **Onboarding dialogs** (startup): "Verified Links", "Background Location Permission".
 - [ ] **Error/blocking dialogs** seen during bring-up: "Unsafe Network Detected", "Downtime", the
       "app does not support rooted devices" kill dialog, "requires a device unlock PIN".
-- [ ] **Advanced Remote not yet open** — the dashboard home before the panel is opened (if applicable),
-      incl. the `Advanced Remote` entry point.
+- [x] **Advanced Remote entry point** — found: ⋯ "More Horizontal" at (902,929) on the Remote tab.
