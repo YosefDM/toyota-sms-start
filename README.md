@@ -103,6 +103,7 @@ scripts/
   frida/          — the anti-tamper bypass hook + read-only debug loggers + config template
   device/         — on-device helpers (system CA install for TLS-inspecting networks)
   host/           — emulator boot, app launch, and per-command UI taps
+server/           — the Twilio SMS webhook: verify sender → parse keyword → tap the app's button → reply
 ```
 
 ---
@@ -114,8 +115,8 @@ scripts/
 | Rooted emulator + app running unattended | ✅ done |
 | Logged in, remote command reaches the car | ✅ **verified** |
 | Per-command UI tap scripts | 🟨 drafted (coords mapped) |
+| Twilio SMS bridge (sender allowlist, confirmation, replies) | 🟨 built — `server/`, needs live test with a number |
 | Auto-start / reboot-survivable production setup | ⬜ todo |
-| Twilio SMS bridge (sender allowlist, replies) | ⬜ todo |
 
 ---
 
