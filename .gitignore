@@ -40,3 +40,6 @@ ui.xml
 scratchpad/
 .DS_Store
 Thumbs.db
+
+# UI capture library (screenshots/dumps may show vehicle/account data)
+ui-map/
