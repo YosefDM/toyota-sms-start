@@ -62,6 +62,31 @@ Reduce the frequency:
 - Measure the actual re-auth **cadence** (days vs weeks) so alerting expectations are realistic.
 - Don't `pm clear` / wipe `/data`; don't let Frida detach.
 
+## FCM push notifications (command-result feedback)
+
+The app's authoritative success/failure signal is a **push notification** from Toyota after each command
+(the UI "Sending…" spinner is unreliable). To receive it, the emulator needs working FCM, which requires:
+
+1. **A Google account signed in** on the emulator (done — enables GMS checkin; fixes `AUTHENTICATION_FAILED`).
+2. **FCM traffic NOT TLS-intercepted.** Per Google's own docs, *"FCM's protocol for delivering push
+   messages to devices is not able to be proxied through network proxies"* — and Google Play Services pins
+   its certs, so a MITM filter breaks FCM and trusting the filter's CA does **not** help (GMS ignores the
+   system store). Measured: push port 5228 already serves the real Google cert on this network, but Google's
+   443 registration endpoints are MITM'd → registration fails.
+
+   **Fix:** exempt these from TLS interception in the content filter (SNI pass-through, like the Toyota login
+   domain was) — ports **5228–5230 + 443**, hostnames:
+   `mtalk.google.com`, `mtalk4.google.com`, `alt1-mtalk.google.com`…`alt8-mtalk.google.com`,
+   `android.apis.google.com`, `device-provisioning.googleapis.com`, `firebaseinstallations.googleapis.com`.
+   (A physical phone on the same filter gets notifications, confirming the filter already passes Google push
+   through for a set-up device; the emulator just needs the same exemptions.)
+
+   Refs: Firebase "Configure your Network for FCM"
+   (https://firebase.google.com/docs/cloud-messaging/network-configuration).
+
+3. Then the dispatcher reads the notification shade (`dumpsys notification` / a NotificationListener) to
+   report real success/failure over SMS. Until FCM is confirmed, use "treat-as-sent" feedback.
+
 ## Twilio bridge (TODO)
 
 - Twilio number → inbound-SMS webhook → small service (FastAPI) on the box (public URL via Cloudflare
