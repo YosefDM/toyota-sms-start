@@ -64,6 +64,10 @@ Reduce the frequency:
 
 ## FCM push notifications (command-result feedback)
 
+> **On a normal production network (no TLS interception), FCM works out of the box** — skip the exemption
+> list below; it's only needed on a filtered/MITM dev network. The notification-reading in step 3 still
+> applies everywhere.
+
 The app's authoritative success/failure signal is a **push notification** from Toyota after each command
 (the UI "Sending…" spinner is unreliable). To receive it, the emulator needs working FCM, which requires:
 

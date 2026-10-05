@@ -69,6 +69,23 @@ the app has against running in exactly this kind of environment. Each is documen
 
 ---
 
+## Development network vs production
+
+This was built on a home network that runs a **TLS-intercepting content filter** (MITM). Several steps exist
+*only* to cope with that and are **not needed in production** on a normal, unfiltered connection:
+
+| Concern | Filtered dev network | Production (unfiltered) |
+|---|---|---|
+| App certificate pinning | needs Frida **TLS-unpinning** | not needed — real certs validate |
+| System **CA injection** (`install_ca.sh`) | required | not needed |
+| **Captive-portal** disable | required (else "no internet") | not needed |
+| **FCM** push notifications | needs the filter to exempt Google push domains | **works out of the box** → real success/failure feedback |
+| Login domain reachability | needs filter whitelist | fine |
+
+**Always required (network-independent):** the root/emulator anti-tamper **bypass** (`toyota_bypass.js`, kept
+attached via Frida), a device PIN, login + session/OTP handling, the UI command taps, and the boot module +
+supervisor for always-on recovery.
+
 ## Setup
 
 Prerequisites: Android SDK command-line tools, a JDK, Python 3.12, Node (for later UI automation), and a
