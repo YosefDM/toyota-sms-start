@@ -29,8 +29,15 @@ Status:
 - ✅ **COMMAND VERIFIED END-TO-END:** long-pressed Unlock → car unlocked → **FCM push received**:
   "2025 Camry Hybrid: The vehicle is now unlocked. [DL0]" (read via `dumpsys notification`). The UI-tap
   command path AND the notification feedback channel both work on the rig.
-- ⬜ **NEXT:** full command map (hazards/horn/lights/trunk — scroll Remote panel / ⋯), wire the dispatcher
-  to read `dumpsys notification` for result → Twilio webhook (sender allowlist, OTP relay) → watchdog
+- ✅ **Full command map wired (by resource-id, not coords)** — all 9 commands in `server/toyota_control.py`
+  with the guard model (verify the Advanced Remote anchor set, open the ⋯ modal if needed, refuse on
+  mismatch; trunk lock/unlock disambiguated by label since they share an id). Resolution-independent.
+- ✅ **Real result feedback wired** — `await_result()` reads `dumpsys notification --noredact` and the
+  Twilio bridge (`server/app.py`) replies with Toyota's actual push text, not the "Sending…" spinner.
+  Offline unit-tested (node parse, id find, trunk label, notification match).
+- ⬜ **NEXT:** live-test the bridge with a real Twilio number + public HTTPS URL; then OTP re-auth relay
+  (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` already raised → alert operator + relay code)
+  and a watchdog.
 - ⚠️ Dashboard showed **"1 subscription expiring"** — keep an eye on the Remote Connect subscription
 
 Full live state + the exact resume checklist is in memory `toyota-gcp-rig-state` and in

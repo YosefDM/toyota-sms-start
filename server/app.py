@@ -73,12 +73,23 @@ async def sms(request: Request, From: str = Form(""), Body: str = Form("")):
         return _reply("One moment — still processing your last command.")
     _last_cmd_at[From] = now
 
-    # 6) do it (UI tap) and report
+    # 6) do it (UI tap)
+    pretty = command.replace("_", " ")
     try:
-        tc.execute(command)
+        since_ms = tc.execute(command)
+    except tc.NotLoggedIn:
+        return _reply(
+            "The car app is signed out and needs to be re-authenticated before I can send commands. "
+            "The operator has been alerted."
+        )
     except tc.ControlError as e:
-        return _reply(f"Couldn't send {command.replace('_',' ')}: {e}")
+        return _reply(f"Couldn't send {pretty}: {e}")
+
+    # 7) report the REAL result from Toyota's push notification (authoritative), not the UI spinner
+    result = tc.await_result(since_ms)
+    if result and result.get("text"):
+        return _reply(result["text"])
     return _reply(
-        f"Sent '{command.replace('_',' ')}' to the car. "
-        f"(It may take a few seconds; the app doesn't always confirm instantly.)"
+        f"Sent '{pretty}' to the car. No confirmation came back within "
+        f"{tc.RESULT_TIMEOUT}s — the command may still be completing."
     )

@@ -131,7 +131,8 @@ server/           — the Twilio SMS webhook: verify sender → parse keyword �
 |---|---|
 | Rooted emulator + app running unattended | ✅ done |
 | Logged in, remote command reaches the car | ✅ **verified** |
-| Per-command UI tap scripts | 🟨 drafted (coords mapped) |
+| Per-command UI taps — all 9 commands, by resource-id + guard model | ✅ done |
+| Real success/failure feedback from the app's push notification | ✅ built |
 | Twilio SMS bridge (sender allowlist, confirmation, replies) | 🟨 built — `server/`, needs live test with a number |
 | Auto-start / reboot-survivable production setup | ⬜ todo |
 

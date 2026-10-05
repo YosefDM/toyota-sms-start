@@ -100,9 +100,11 @@ These should each be captured so the guard can positively recognize a "do NOT ta
 
 - [x] **Sending / in-flight** — captured. Finding: other buttons stay enabled/clickable during Sending →
       **non-blocking**; the spinner is an unreliable success signal (hung once, cleared in ~5s another time).
-      **Authoritative result = Toyota's push notification** after the command — the dispatcher should read the
-      notification shade (`dumpsys notification` / NotificationListener) and report real success/failure over
-      SMS. (Push needs FCM = a Google account on the emulator; see docs/PRODUCTION.md.)
+      **Authoritative result = Toyota's push notification** after the command. **Implemented:**
+      `server/toyota_control.py::await_result()` reads the notification shade (`dumpsys notification
+      --noredact`), matches a Toyota notification posted at/after the command's timestamp, and the Twilio
+      bridge replies with its real text. (Push needs FCM = a Google account on the emulator; see
+      docs/PRODUCTION.md.)
 - [x] **Login / signed-out flow** — captured (see "Login / signed-out flow" above).
 - [x] **Verified Links** onboarding dialog — captured.
 - [ ] **OTP screen** — conditional; didn't appear on a trusted-device re-login; capture when next seen.
