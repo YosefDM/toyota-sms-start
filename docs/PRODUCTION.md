@@ -78,12 +78,24 @@ Reduce the frequency:
 - Alert the operator (SMS/email) if the emulator/Frida/app is down or stuck at login.
 - Health check: periodically confirm the app is on the dashboard and the Frida session is attached.
 
-## Durability checklist (what's left)
+## Durability automation (built — `scripts/`)
 
-- [ ] Magisk `service.sh` module: `setenforce 0`, start frida-server, (filtered-net) install_ca + captive-portal, `svc power stayon true`
-- [ ] Host supervisor (systemd/Docker): boot emulator, re-spawn Frida, keep attached
-- [ ] Auto-unlock keyguard on boot
-- [ ] Per-command tap scripts hardened against the "Sending…" stuck-UI state
-- [ ] Twilio webhook service + sender whitelist + confirmation replies
-- [ ] OTP re-auth path decided + implemented
-- [ ] Watchdog + operator alerting
+- **On-device: Magisk boot module** (`scripts/device/magisk-module/`, install via `scripts/device/install-module.sh`).
+  Its `service.sh` runs late_start as root every boot and re-applies: `setenforce 0`, captive-portal off,
+  content-filter CA trust (`install_ca.sh`, tmpfs + rbind into zygote namespaces), `svc power stayon true`,
+  and starts `frida-server`. Install once (`install-module.sh <ca.0> <frida-server>`), then it's automatic.
+- **Host: supervisor** (`scripts/host/supervisor.sh`). Kills stale emulator/locks → boots the emulator
+  (software GPU) → waits for boot → unlocks with the PIN → waits for `frida-server` → spawn-gates the app
+  under a **persistent** frida session (`tail -f /dev/null | frida …`) and **re-spawns if it drops**.
+  Run it from a systemd unit / Windows Task Scheduler at login so the whole rig comes up unattended.
+
+### Durability checklist
+
+- [x] Magisk `service.sh` module (setenforce / captive-portal / CA / stay-awake / frida-server)
+- [x] Host supervisor: boot emulator, keep Frida persistently attached, re-spawn on drop
+- [x] Auto-unlock keyguard on boot (PIN via `input`; digit-tap fallback noted if `input text` is ignored)
+- [ ] Validate with one real reboot (also the clean moment to confirm FCM notifications light up)
+- [ ] Per-command tap: harden panel navigation + find-by-resource-id (from docs/UI-MAP.md); non-blocking "Sending" is fine
+- [ ] Twilio webhook live test (server/ built; needs a number + public HTTPS URL)
+- [ ] OTP re-auth path (detect LoginActivity → SMS-alert → OTP relay); tick "Keep me signed in"
+- [ ] Watchdog + operator alerting (use /health + notification-shade reads)

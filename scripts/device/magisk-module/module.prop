@@ -1,0 +1,6 @@
+id=toyota_boot
+name=Toyota SMS Remote boot setup
+version=v1
+versionCode=1
+author=toyota-sms-start
+description=Boot-time setup for the always-on rig: SELinux permissive (for frida spawn-gating), captive-portal detection off (TLS-filter networks), content-filter CA trust, start frida-server, keep screen awake.
