@@ -14,11 +14,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MOD="$HERE/magisk-module"
 CA="${1:-}"; FRIDA="${2:-}"
 DEST=/data/adb/modules/toyota_boot
+# adb.exe is a Windows binary; with path-conversion off it needs Windows-style SOURCE paths.
+win(){ cygpath -m "$1" 2>/dev/null || echo "$1"; }
 
 echo "=== staging module to device ==="
-"$ADB" -s "$SER" push "$MOD/module.prop" "$MOD/service.sh" "$MOD/install_ca.sh" /data/local/tmp/toyota_boot/
-[ -n "$CA" ] && "$ADB" -s "$SER" push "$CA" /data/local/tmp/toyota_boot/
-[ -n "$FRIDA" ] && "$ADB" -s "$SER" push "$FRIDA" /data/local/tmp/frida-server
+"$ADB" -s "$SER" shell "mkdir -p /data/local/tmp/toyota_boot"
+for f in module.prop service.sh install_ca.sh; do
+  "$ADB" -s "$SER" push "$(win "$MOD/$f")" /data/local/tmp/toyota_boot/$f
+done
+[ -n "$CA" ] && "$ADB" -s "$SER" push "$(win "$CA")" /data/local/tmp/toyota_boot/
+[ -n "$FRIDA" ] && "$ADB" -s "$SER" push "$(win "$FRIDA")" /data/local/tmp/frida-server
 
 echo "=== installing module (root) ==="
 "$ADB" -s "$SER" shell "su -c '

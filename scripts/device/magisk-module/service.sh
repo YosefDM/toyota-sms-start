@@ -24,7 +24,7 @@ echo "captive-portal off" >>"$LOG"
 [ -f "$MODDIR/install_ca.sh" ] && sh "$MODDIR/install_ca.sh" >>"$LOG" 2>&1
 
 # 4) keep the screen on while plugged in
-svc power stayon true 2>>"$LOG" && echo "stayon true" >>"$LOG"
+/system/bin/svc power stayon true 2>>"$LOG" && echo "stayon true" >>"$LOG"
 
 # 5) start frida-server (root). The host supervisor waits for this, then spawn-gates the app.
 if [ -f /data/local/tmp/frida-server ]; then

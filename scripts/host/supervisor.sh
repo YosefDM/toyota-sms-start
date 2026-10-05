@@ -15,6 +15,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 FRIDA_DIR="$HERE/../frida"
 FRIDA_BIN="${FRIDA_BIN:-frida}"             # version-matched to frida-server
 PKG="com.toyota.oneapp"
+win(){ cygpath -m "$1" 2>/dev/null || echo "$1"; }  # frida.exe needs Windows-form -l paths
 
 log(){ echo "[$(date +%H:%M:%S)] $*"; }
 
@@ -58,8 +59,8 @@ wait_frida_server(){
 spawn_app_persistent(){
   # Keep frida attached for the whole uptime; hooks unload if it detaches. `tail -f /dev/null`
   # holds stdin open so the frida REPL doesn't EOF-exit. Re-spawn if it ever drops.
-  local args=(-U -f "$PKG" -l "$FRIDA_DIR/toyota_bypass.js")
-  [ -f "$FRIDA_DIR/combined_unpin.js" ] && args=(-U -f "$PKG" -l "$FRIDA_DIR/combined_unpin.js" -l "$FRIDA_DIR/toyota_bypass.js")
+  local args=(-U -f "$PKG" -l "$(win "$FRIDA_DIR/toyota_bypass.js")")
+  [ -f "$FRIDA_DIR/combined_unpin.js" ] && args=(-U -f "$PKG" -l "$(win "$FRIDA_DIR/combined_unpin.js")" -l "$(win "$FRIDA_DIR/toyota_bypass.js")")
   while true; do
     log "spawn-gating $PKG under frida…"
     tail -f /dev/null | "$FRIDA_BIN" "${args[@]}"
