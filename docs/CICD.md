@@ -27,65 +27,58 @@ instead of failing, so it's safe to merge before finishing setup.
 That's all the review workflow needs. (On a public repo, GitHub withholds secrets from *fork* PRs, so
 reviews run only on PRs pushed to a branch in this repo — fine for a solo repo.)
 
-### 2. Deploy to the rig over IAP — the `GCP_*` + `APP_USER` secrets
+### 2. Deploy to the rig over IAP — keyless via Workload Identity Federation
 
-The deploy runs on a GitHub-hosted runner that authenticates to GCP with a **service-account key** and
-reaches the VM through an **IAP tunnel** (the VM's port 22 is not open to the public internet).
+The deploy runs on a GitHub-hosted runner that authenticates to GCP **keylessly** (the runner's GitHub
+OIDC token is exchanged for short-lived SA credentials via Workload Identity Federation) and reaches the
+VM through an **IAP tunnel**. No service-account key is created or stored — this project's org policy
+(`constraints/iam.disableServiceAccountKeyCreation`) blocks SA keys anyway, and WIF is the better path.
 
-**a. Create a deploy service account and grant it the three roles it needs.** Replace the placeholders
-(`$PROJECT`, and keep the generated key file out of the repo):
+> **This is already set up for this repo.** The steps below record what was done, for rebuild/audit.
+
+**a. Service account + roles** (no OS Login — the SA uses metadata SSH, which the guest agent also grants
+passwordless sudo, so it doesn't disturb the existing `Yosef` login):
 
 ```bash
-PROJECT=your-gcp-project-id
-gcloud iam service-accounts create toyota-deployer \
-  --project "$PROJECT" --display-name "Toyota rig CI deployer"
-
+PROJECT=<project-id>;  PNUM=<project-number>;  REPO=YosefDM/toyota-sms-start
 SA="toyota-deployer@${PROJECT}.iam.gserviceaccount.com"
-
-# use the IAP tunnel …
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "serviceAccount:$SA" --role roles/iap.tunnelResourceAccessor
-# … SSH in via OS Login WITH sudo (needed: the deploy writes a systemd unit) …
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "serviceAccount:$SA" --role roles/compute.osAdminLogin
-# … and look up the instance.
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "serviceAccount:$SA" --role roles/compute.viewer
+gcloud iam service-accounts create toyota-deployer --project "$PROJECT" --display-name "Toyota rig CI deployer"
+gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$SA" \
+  --role roles/iap.tunnelResourceAccessor --condition=None            # use the IAP tunnel
+gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$SA" \
+  --role roles/compute.instanceAdmin.v1 --condition=None              # describe VM + push metadata SSH key
 ```
 
-**b. Make sure OS Login + the IAP SSH firewall are in place** (they already are if you SSH to the rig
-via IAP today):
+Port 22 is already reachable from IAP's range `35.235.240.0/20` via the existing `default-allow-ssh`
+rule, so no firewall change is needed.
+
+**b. Workload Identity Federation**, scoped to this one repo:
 
 ```bash
-# OS Login on the instance (or set it project-wide):
-gcloud compute instances add-metadata toyota-rig \
-  --project "$PROJECT" --zone northamerica-northeast1-a \
-  --metadata enable-oslogin=TRUE
-# Firewall: allow IAP's range to reach port 22 (idempotent to re-run):
-gcloud compute firewall-rules create allow-iap-ssh \
-  --project "$PROJECT" --direction INGRESS --action ALLOW \
-  --rules tcp:22 --source-ranges 35.235.240.0/20 || true
+gcloud iam workload-identity-pools create github-pool --project "$PROJECT" --location global --display-name "GitHub Actions"
+gcloud iam workload-identity-pools providers create-oidc github-provider --project "$PROJECT" \
+  --location global --workload-identity-pool github-pool --display-name "GitHub OIDC" \
+  --issuer-uri "https://token.actions.githubusercontent.com" \
+  --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
+  --attribute-condition "assertion.repository=='${REPO}'"
+gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
+  --role roles/iam.workloadIdentityUser \
+  --member "principalSet://iam.googleapis.com/projects/${PNUM}/locations/global/workloadIdentityPools/github-pool/attribute.repository/${REPO}"
 ```
 
-**c. Create a key and load all deploy secrets into the repo:**
+**c. Repo secrets** (no key — just identifiers):
 
 ```bash
-gcloud iam service-accounts keys create sa-key.json --iam-account "$SA"
-
-gh secret set GCP_SA_KEY  < sa-key.json
-gh secret set GCP_PROJECT --body "$PROJECT"
-gh secret set GCP_ZONE    --body "northamerica-northeast1-a"
-gh secret set GCP_VM      --body "toyota-rig"
-gh secret set APP_USER    --body "<the VM user that owns the emulator/adb>"   # the rig's login user
-
-rm -f sa-key.json         # the key now lives only in the GitHub secret
+gh secret set WIF_PROVIDER --body "projects/${PNUM}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+gh secret set GCP_SA_EMAIL --body "$SA"
+gh secret set GCP_PROJECT  --body "$PROJECT"
+gh secret set GCP_ZONE     --body "northamerica-northeast1-a"
+gh secret set GCP_VM       --body "toyota-rig"
+gh secret set APP_USER     --body "Yosef"     # the VM user that owns the emulator/adb; the service runs as it
 ```
 
-`APP_USER` is the Linux user on the VM that launched the emulator (so the service shares that user's
-adb server). The webhook service runs as this user.
-
-**d. VM prerequisites** (once): `git`, `python3-venv`, and `curl` installed, and the OS-Login deploy
-identity able to `sudo` without a password (granted by `roles/compute.osAdminLogin`).
+**d. VM prerequisites** (once): `git`, `python3-venv`, and `curl` installed. The SA's metadata-SSH user
+gets passwordless sudo automatically via the Google guest agent (`google-sudoers`).
 
 ---
 

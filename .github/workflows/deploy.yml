@@ -28,7 +28,8 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
       GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
       GCP_ZONE: ${{ secrets.GCP_ZONE }}
       GCP_VM: ${{ secrets.GCP_VM }}
@@ -39,19 +40,20 @@ jobs:
       - name: Check deploy secrets are configured
         id: guard
         run: |
-          if [ -n "$GCP_SA_KEY" ] && [ -n "$GCP_PROJECT" ] && [ -n "$GCP_ZONE" ] \
-             && [ -n "$GCP_VM" ] && [ -n "$APP_USER" ]; then
+          if [ -n "$WIF_PROVIDER" ] && [ -n "$GCP_SA_EMAIL" ] && [ -n "$GCP_PROJECT" ] \
+             && [ -n "$GCP_ZONE" ] && [ -n "$GCP_VM" ] && [ -n "$APP_USER" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Deploy secrets not set yet (need GCP_SA_KEY, GCP_PROJECT, GCP_ZONE, GCP_VM, APP_USER). Skipping deploy — see docs/CICD.md."
+            echo "::notice::Deploy secrets not set yet (need WIF_PROVIDER, GCP_SA_EMAIL, GCP_PROJECT, GCP_ZONE, GCP_VM, APP_USER). Skipping deploy — see docs/CICD.md."
           fi
 
       - id: auth
         if: steps.guard.outputs.ready == 'true'
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
 
       - name: Set up gcloud
         if: steps.guard.outputs.ready == 'true'
