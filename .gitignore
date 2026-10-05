@@ -1,12 +1,17 @@
+# NOTE: git .gitignore does NOT support inline (end-of-line) comments — a '#' only
+# starts a comment at the start of a line. Keep every pattern on its own line.
+
 # ───────── Secrets / personal — NEVER commit ─────────
-scripts/frida/config.js          # contains your TLS-filter CA (CERT_PEM)
-scripts/frida/combined_unpin.js  # built artifact that embeds config.js
+# config.js contains the TLS-filter CA (CERT_PEM); combined_unpin.js embeds it.
+scripts/frida/config.js
+scripts/frida/combined_unpin.js
 **/*.keybox.xml
 .env
 *.pem
 *.crt
 *.cer
-*.0                              # Android hashed CA files
+# Android hashed CA files (e.g. 6f2a8e1c.0)
+*.0
 secrets/
 twilio.env
 
@@ -24,8 +29,10 @@ toyota_split/
 frida-server*
 Magisk*.zip
 Magisk*.apk
-*.img                            # Android system/ramdisk images
-jadxout/                         # decompiled app sources (copyrighted)
+# Android system/ramdisk images
+*.img
+# decompiled app sources (copyrighted)
+jadxout/
 *.so
 
 # ───────── Tooling / junk ─────────
@@ -36,7 +43,8 @@ __pycache__/
 node_modules/
 *.log
 ui.xml
-*.png                            # screenshots/dumps (may show account info)
+# screenshots/dumps (may show account/vehicle info)
+*.png
 scratchpad/
 .DS_Store
 Thumbs.db
