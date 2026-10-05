@@ -1,0 +1,71 @@
+name: Deploy to prod rig
+
+# Deploys the FastAPI webhook to the GCP rig (toyota-rig) over an IAP tunnel, as a GitHub-hosted
+# runner authenticated with a GCP service account. Fires automatically on merge to master (when the
+# server changes) and can also be run manually. The deploy restarts ONLY the webhook service — it
+# never touches the emulator, Frida, or the logged-in Toyota session, which keep running.
+#
+# Required secrets (see docs/CICD.md): GCP_SA_KEY, GCP_PROJECT, GCP_ZONE, GCP_VM, APP_USER.
+# Until they're all set, the job no-ops with a notice instead of failing.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "server/**"
+      - "scripts/deploy/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+      GCP_ZONE: ${{ secrets.GCP_ZONE }}
+      GCP_VM: ${{ secrets.GCP_VM }}
+      APP_USER: ${{ secrets.APP_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check deploy secrets are configured
+        id: guard
+        run: |
+          if [ -n "$GCP_SA_KEY" ] && [ -n "$GCP_PROJECT" ] && [ -n "$GCP_ZONE" ] \
+             && [ -n "$GCP_VM" ] && [ -n "$APP_USER" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deploy secrets not set yet (need GCP_SA_KEY, GCP_PROJECT, GCP_ZONE, GCP_VM, APP_USER). Skipping deploy — see docs/CICD.md."
+          fi
+
+      - id: auth
+        if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy over IAP
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          # Push the deploy script to the VM through the IAP tunnel, then run it there. (Inline
+          # multi-step commands over the IAP SSH tunnel are flaky — copy a file and run it.)
+          gcloud compute scp --tunnel-through-iap \
+            --project "$GCP_PROJECT" --zone "$GCP_ZONE" \
+            scripts/deploy/remote_deploy.sh "$GCP_VM:/tmp/remote_deploy.sh"
+          gcloud compute ssh "$GCP_VM" --tunnel-through-iap \
+            --project "$GCP_PROJECT" --zone "$GCP_ZONE" \
+            --command "APP_USER='$APP_USER' REPO_URL='${{ github.server_url }}/${{ github.repository }}.git' DEPLOY_SHA='${{ github.sha }}' bash /tmp/remote_deploy.sh"

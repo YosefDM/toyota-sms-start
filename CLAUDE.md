@@ -106,11 +106,25 @@ docs/
                    VM sizing, per-boot persistence, session/OTP re-auth, FCM, Twilio, watchdog
   FINDINGS.md    — RE analysis: the 3 client-side protections, Play-Integrity=Stripe-only, hosts, commands
   UI-MAP.md      — screen map, command resource-ids, guard model, login/OTP flow
+  CICD.md        — GitHub Actions: CI tests, Claude PR review, IAP deploy to the rig + secret setup
+.github/workflows/ — ci.yml (tests) · claude-review.yml (PR review) · deploy.yml (merge→rig over IAP)
 scripts/frida/   — toyota_bypass.js (anti-tamper; the ONLY frida piece needed on prod) + debug loggers + config template
 scripts/device/  — Magisk boot module + CA install (CA is dev-only)
-scripts/host/    — emulator boot, app launch, per-command taps, supervisor
-server/          — FastAPI Twilio webhook: verify sender → parse keyword → tap → reply
+scripts/host/    — emulator boot, app launch, per-command taps (resource-id, via the server module), supervisor
+scripts/deploy/  — remote_deploy.sh (runs on the VM; git pull + venv + restart ONLY the webhook service)
+server/          — FastAPI Twilio webhook: verify sender → parse keyword → tap → read push → reply
+  tests/         — offline unit tests (parsing/matching; no device needed)
 ```
+
+## CI/CD (see docs/CICD.md)
+- **Push/PR → `ci.yml`**: byte-compile + `server/tests` unit tests.
+- **PR → `claude-review.yml`**: `/code-review` skill posts findings as PR comments (auth: subscription
+  OAuth token in `CLAUDE_CODE_OAUTH_TOKEN`). Runs only once the workflow is on `master`.
+- **Merge to `master` (server changes) → `deploy.yml`**: GitHub-hosted runner auths to GCP with a
+  service-account key, tunnels in over **IAP**, and runs `scripts/deploy/remote_deploy.sh` on the VM.
+  Restarts ONLY `toyota-sms.service` — emulator/frida/session untouched. No-ops (with a notice) until
+  the `GCP_*`/`APP_USER` secrets are set. The VM's `server/.env` (Twilio token, allowlist) is NOT
+  deployed — it's managed by hand on the VM.
 Secrets, APKs, images, frida-server, CA/PEMs are **git-ignored** (`.gitignore`; note: no inline comments in
 gitignore — see memory `gitignore-no-inline-comments`). Repo is public (portfolio); keep IP/login out of it.
 

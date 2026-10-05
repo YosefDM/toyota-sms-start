@@ -1,0 +1,10 @@
+# Shell scripts run on the Linux VM/emulator — they MUST stay LF (CRLF breaks the shebang/commands).
+*.sh text eol=lf
+*.js text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+# Binary captures (never line-ending-normalized)
+*.png binary
+*.img binary
+*.so binary

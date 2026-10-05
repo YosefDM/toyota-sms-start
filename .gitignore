@@ -5,6 +5,11 @@
 # config.js contains the TLS-filter CA (CERT_PEM); combined_unpin.js embeds it.
 scripts/frida/config.js
 scripts/frida/combined_unpin.js
+# GCP service-account keys (CI deploy uses a GitHub secret, never a file in the repo)
+sa-key.json
+*-sa-key.json
+service-account*.json
+gcp-*.json
 **/*.keybox.xml
 .env
 *.pem

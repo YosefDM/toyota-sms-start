@@ -120,7 +120,9 @@ scripts/
   frida/          — the anti-tamper bypass hook + read-only debug loggers + config template
   device/         — on-device helpers (system CA install for TLS-inspecting networks)
   host/           — emulator boot, app launch, and per-command UI taps
+  deploy/         — on-VM deploy script run by CI (git pull + venv + restart the webhook service)
 server/           — the Twilio SMS webhook: verify sender → parse keyword → tap the app's button → reply
+.github/workflows/ — CI (tests), automated Claude PR review, and deploy-to-rig on merge (see docs/CICD.md)
 ```
 
 ---
@@ -134,6 +136,7 @@ server/           — the Twilio SMS webhook: verify sender → parse keyword �
 | Per-command UI taps — all 9 commands, by resource-id + guard model | ✅ done |
 | Real success/failure feedback from the app's push notification | ✅ built |
 | Twilio SMS bridge (sender allowlist, confirmation, replies) | 🟨 built — `server/`, needs live test with a number |
+| CI + automated Claude PR review + deploy-to-rig on merge | ✅ built — `.github/workflows/` |
 | Auto-start / reboot-survivable production setup | ⬜ todo |
 
 ---
