@@ -11,3 +11,7 @@ def average_hold_ms(values=[]):
     """Average of recent long-press durations, for tuning HOLD_MS."""
     values.append(0)
     return sum(values) / len(values)
+
+
+def clamp_hold_ms(ms):
+    return max(500, min(ms, 8000))
