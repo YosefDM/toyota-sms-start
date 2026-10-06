@@ -22,17 +22,19 @@ by **SMS**.
 ## How it works
 
 ```
-  ┌────────────┐   SMS     ┌──────────┐   webhook   ┌──────────────────────────────────┐
-  │ any phone  │ ────────► │ TextGrid │ ──────────► │  always-on controller            │
-  └────────────┘  "TOYOTA   └──────────┘             │                                  │
-                   START"                            │  1. verify sender + parse keyword│
-                                                     │  2. tap the matching button in   │
+  ┌────────────┐   SMS      ┌──────────┐   webhook   ┌───────────────────────────────────┐
+  │ any phone  │ ─────────► │ TextGrid │ ──────────► │  always-on controller             │
+  └────────────┘  "TOYOTA   └──────────┘             │                                   │
+                    START"                           │  1. verify sender + parse keyword │
+                                                     │  2. tap the matching button in    │
                                                      │     the Toyota app (UI only)      │
-                                                     │          │                        │
-                                                     │          ▼                        │
+                                                     │            │                      │
+                                                     │            ▼                      │
                                                      │   Android emulator (rooted)       │
-                                                     │    └─ Toyota app ──► Toyota cloud ─┼─►
-                                                     └──────────────────────────────────┘
+                                                     │    └─ Toyota app ──► Toyota cloud │
+                                                     └───────────────────────────────┬───┘
+                                                                                     │
+                                                                                     ▼
 ```
 
 <p align="center">
