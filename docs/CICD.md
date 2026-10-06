@@ -121,13 +121,13 @@ Toyota session — a code push can't disturb the live rig's app state.
 
 ### The service's own config (`.env`) is NOT deployed
 
-Twilio token, allowed numbers, and adb wiring live in `/opt/toyota-sms-remote/server/.env` on the VM
-(gitignored, managed by hand — copy `server/.env.example`). The deploy leaves it alone. The unit
-references it optionally, so the service also starts fine before a real `.env` exists (handy for a
+TextGrid webhook secret, allowed numbers, and adb wiring live in `/opt/toyota-sms-remote/server/.env`
+on the VM (gitignored, managed by hand — copy `server/.env.example`). The deploy leaves it alone. The
+unit references it optionally, so the service also starts fine before a real `.env` exists (handy for a
 first smoke-test: `/health` answers 200 even with no emulator attached).
 
 ### Exposing the webhook
 
-uvicorn binds `127.0.0.1:8080`. Twilio needs a public HTTPS URL → run a tunnel on the VM (e.g.
-Cloudflare Tunnel) pointing at `127.0.0.1:8080`, and set that URL as both Twilio's webhook and
-`PUBLIC_URL` in `.env` (used for request-signature validation).
+uvicorn binds `127.0.0.1:8080`. TextGrid needs a public HTTPS URL → run a tunnel on the VM (e.g.
+Cloudflare Tunnel) pointing at `127.0.0.1:8080`, and set that URL as both the TextGrid number's smsUrl
+and `PUBLIC_URL` in `.env` (it's part of the signed payload, so it must match exactly).
