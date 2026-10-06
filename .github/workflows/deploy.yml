@@ -34,6 +34,7 @@ jobs:
       GCP_ZONE: ${{ secrets.GCP_ZONE }}
       GCP_VM: ${{ secrets.GCP_VM }}
       APP_USER: ${{ secrets.APP_USER }}
+      HAS_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,11 +42,12 @@ jobs:
         id: guard
         run: |
           if [ -n "$WIF_PROVIDER" ] && [ -n "$GCP_SA_EMAIL" ] && [ -n "$GCP_PROJECT" ] \
-             && [ -n "$GCP_ZONE" ] && [ -n "$GCP_VM" ] && [ -n "$APP_USER" ]; then
+             && [ -n "$GCP_ZONE" ] && [ -n "$GCP_VM" ] && [ -n "$APP_USER" ] \
+             && [ "$HAS_SSH_KEY" = "true" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Deploy secrets not set yet (need WIF_PROVIDER, GCP_SA_EMAIL, GCP_PROJECT, GCP_ZONE, GCP_VM, APP_USER). Skipping deploy — see docs/CICD.md."
+            echo "::notice::Deploy secrets not set yet (need WIF_PROVIDER, GCP_SA_EMAIL, GCP_PROJECT, GCP_ZONE, GCP_VM, APP_USER, SSH_PRIVATE_KEY). Skipping deploy — see docs/CICD.md."
           fi
 
       - id: auth
@@ -61,13 +63,21 @@ jobs:
 
       - name: Deploy over IAP
         if: steps.guard.outputs.ready == 'true'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_USER: toyota-deployer
         run: |
           set -euo pipefail
+          # Use a pre-provisioned SSH key (its public half is already in the instance metadata), so
+          # gcloud authenticates without needing to write metadata itself.
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" > "$HOME/.ssh/deploy_key.pub"
+          SSH_FLAGS="--tunnel-through-iap --project $GCP_PROJECT --zone $GCP_ZONE --ssh-key-file=$HOME/.ssh/deploy_key -q"
           # Push the deploy script to the VM through the IAP tunnel, then run it there. (Inline
           # multi-step commands over the IAP SSH tunnel are flaky — copy a file and run it.)
-          gcloud compute scp --tunnel-through-iap \
-            --project "$GCP_PROJECT" --zone "$GCP_ZONE" \
-            scripts/deploy/remote_deploy.sh "$GCP_VM:/tmp/remote_deploy.sh"
-          gcloud compute ssh "$GCP_VM" --tunnel-through-iap \
-            --project "$GCP_PROJECT" --zone "$GCP_ZONE" \
+          gcloud compute scp $SSH_FLAGS \
+            scripts/deploy/remote_deploy.sh "$SSH_USER@$GCP_VM:/tmp/remote_deploy.sh"
+          gcloud compute ssh "$SSH_USER@$GCP_VM" $SSH_FLAGS \
             --command "APP_USER='$APP_USER' REPO_URL='${{ github.server_url }}/${{ github.repository }}.git' DEPLOY_SHA='${{ github.sha }}' bash /tmp/remote_deploy.sh"

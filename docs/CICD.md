@@ -36,21 +36,37 @@ VM through an **IAP tunnel**. No service-account key is created or stored — th
 
 > **This is already set up for this repo.** The steps below record what was done, for rebuild/audit.
 
-**a. Service account + roles** (no OS Login — the SA uses metadata SSH, which the guest agent also grants
-passwordless sudo, so it doesn't disturb the existing `Yosef` login):
+**a. Service account + roles** (no OS Login — it would break the existing `Yosef` metadata-SSH login):
 
 ```bash
-PROJECT=<project-id>;  PNUM=<project-number>;  REPO=YosefDM/toyota-sms-start
+PROJECT=<project-id>;  PNUM=<project-number>;  REPO=YosefDM/toyota-sms-start;  ZONE=northamerica-northeast1-a
 SA="toyota-deployer@${PROJECT}.iam.gserviceaccount.com"
 gcloud iam service-accounts create toyota-deployer --project "$PROJECT" --display-name "Toyota rig CI deployer"
 gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$SA" \
   --role roles/iap.tunnelResourceAccessor --condition=None            # use the IAP tunnel
 gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$SA" \
-  --role roles/compute.instanceAdmin.v1 --condition=None              # describe VM + push metadata SSH key
+  --role roles/compute.instanceAdmin.v1 --condition=None              # describe the VM (instances.get)
+# Enable the APIs WIF + IAP need:
+gcloud services enable iamcredentials.googleapis.com iap.googleapis.com --project "$PROJECT"
 ```
 
 Port 22 is already reachable from IAP's range `35.235.240.0/20` via the existing `default-allow-ssh`
 rule, so no firewall change is needed.
+
+**a2. Pre-provision a dedicated deploy SSH key.** The SA can mint credentials but isn't allowed to write
+SSH keys into metadata on the fly, so we add the key once (as a project owner). This also keeps the key
+off OS Login and leaves the `Yosef` project key untouched. The guest agent gives the `toyota-deployer`
+user passwordless sudo automatically.
+
+```bash
+ssh-keygen -t ed25519 -f deploy_key -N "" -C toyota-deployer
+# instance ssh-keys metadata starts empty here; if yours isn't, append rather than overwrite:
+printf 'toyota-deployer:%s\n' "$(cat deploy_key.pub)" > ssh-keys.txt
+gcloud compute instances add-metadata toyota-rig --project "$PROJECT" --zone "$ZONE" \
+  --metadata-from-file ssh-keys=ssh-keys.txt
+gh secret set SSH_PRIVATE_KEY < deploy_key
+rm -f deploy_key deploy_key.pub ssh-keys.txt
+```
 
 **b. Workload Identity Federation**, scoped to this one repo:
 
@@ -72,13 +88,14 @@ gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
 gh secret set WIF_PROVIDER --body "projects/${PNUM}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
 gh secret set GCP_SA_EMAIL --body "$SA"
 gh secret set GCP_PROJECT  --body "$PROJECT"
-gh secret set GCP_ZONE     --body "northamerica-northeast1-a"
+gh secret set GCP_ZONE     --body "$ZONE"
 gh secret set GCP_VM       --body "toyota-rig"
 gh secret set APP_USER     --body "Yosef"     # the VM user that owns the emulator/adb; the service runs as it
+# SSH_PRIVATE_KEY was set in step a2.
 ```
 
-**d. VM prerequisites** (once): `git`, `python3-venv`, and `curl` installed. The SA's metadata-SSH user
-gets passwordless sudo automatically via the Google guest agent (`google-sudoers`).
+**d. VM prerequisites** (once): `git`, `python3-venv`, and `curl` installed. The `toyota-deployer`
+metadata-SSH user gets passwordless sudo automatically via the Google guest agent (`google-sudoers`).
 
 ---
 
