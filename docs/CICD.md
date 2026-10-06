@@ -5,12 +5,17 @@ Three GitHub Actions workflows (`.github/workflows/`):
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | every PR + push to `master` | byte-compiles the server + runs the offline unit tests (`server/tests/`) |
-| `claude-review.yml` | every PR | runs the `/code-review` skill and posts findings as PR comments |
+| `claude-review.yml` | every PR | a senior-engineer review pass (opus, read-only repo tools) posts one comprehensive comment via `gh pr comment`; primary + fallback token failover |
 | `deploy.yml` | merge to `master` touching `server/**` (+ manual) | deploys the webhook to the prod rig over an IAP tunnel |
 
-Nothing sensitive is committed — the GCP project, zone, instance, VM username, and service-account
-key all live in GitHub secrets. Until the secrets exist the deploy job **no-ops with a notice**
-instead of failing, so it's safe to merge before finishing setup.
+Nothing sensitive is committed — the GCP project, zone, instance, VM username, and credentials all
+live in GitHub secrets. Until the secrets exist the deploy job **no-ops with a notice** instead of
+failing, so it's safe to merge before finishing setup.
+
+> **Gotcha — editing `claude-review.yml`:** the Claude action refuses to run when a PR changes the
+> review workflow itself (anti-tampering), logging "workflow validation failed … must be identical to
+> the version on the default branch." So changes to the review workflow only take effect **after they
+> merge to `master`** — you can't fully test a review-workflow edit from the PR that makes it.
 
 ---
 
@@ -25,7 +30,9 @@ instead of failing, so it's safe to merge before finishing setup.
    gh secret set CLAUDE_CODE_OAUTH_TOKEN   # paste the token
    ```
 That's all the review workflow needs. (On a public repo, GitHub withholds secrets from *fork* PRs, so
-reviews run only on PRs pushed to a branch in this repo — fine for a solo repo.)
+reviews run only on PRs pushed to a branch in this repo — fine for a solo repo.) Optionally set
+`CLAUDE_CODE_OAUTH_TOKEN_FALLBACK` (a second subscription token) to enable the failover step when the
+primary account hits a usage limit; without it the fallback step is inert.
 
 ### 2. Deploy to the rig over IAP — keyless via Workload Identity Federation
 
