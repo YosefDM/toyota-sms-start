@@ -135,9 +135,9 @@ server/           — the TextGrid SMS webhook: verify sender → parse keyword 
 | Logged in, remote command reaches the car | ✅ **verified** |
 | Per-command UI taps — all 9 commands, by resource-id + guard model | ✅ done |
 | Real success/failure feedback from the app's push notification | ✅ built |
-| TextGrid SMS bridge (sender allowlist, confirmation, replies, signature verify) | 🟨 built — `server/`, needs live test with a number |
+| TextGrid SMS bridge (sender allowlist, confirmation, replies, signature verify) | ✅ **live** — text → car, verified end-to-end |
 | CI + automated Claude PR review + deploy-to-rig on merge | ✅ built — `.github/workflows/` |
-| Auto-start / reboot-survivable production setup | ⬜ todo |
+| Auto-start / reboot-survivable production setup | ✅ done — whole rig comes up untended on VM reboot |
 
 ---
 

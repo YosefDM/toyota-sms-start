@@ -15,30 +15,25 @@ authenticated request to Toyota. Problem → solution → setup is in `README.md
 simulated UI tap in the real app.** Network/Frida tooling is **read-only**, for debugging only. This is
 non-negotiable; it is the entire reason for the emulator approach. (See memory `toyota-hard-boundary-ui-only`.)
 
-## Where we are RIGHT NOW (2026-10-05, paused for the night)
+## Where we are RIGHT NOW (2026-10-06) — THE SMS→CAR BRIDGE IS WORKING END-TO-END
 
-The production rig is **built, rooted, and logged into the Toyota app on GCP**, with the dashboard fully
-loading real vehicle data ("Yosef's Camry", odometer 31,686 mi, fuel). We paused right before testing an
-actual command tap.
+Text a keyword to the TextGrid number and the real car responds, with a real confirmation reply. Verified
+live: `TOYOTA LOCK` → car locked → reply *"2025 Camry Hybrid: The vehicle is now locked. [DL1]"*.
 
 Status:
-- ✅ GCP VM with working nested virt + KVM, emulator boots hardware-accelerated
-- ✅ Rooted (Magisk), frida-server, anti-tamper bypass running as a service, app reaches dashboard
-- ✅ Google account + FCM, device PIN, **logged into Toyota app** (session persists in /data)
-- ✅ Remote command buttons located (IDs + coords below)
-- ✅ **COMMAND VERIFIED END-TO-END:** long-pressed Unlock → car unlocked → **FCM push received**:
-  "2025 Camry Hybrid: The vehicle is now unlocked. [DL0]" (read via `dumpsys notification`). The UI-tap
-  command path AND the notification feedback channel both work on the rig.
-- ✅ **Full command map wired (by resource-id, not coords)** — all 9 commands in `server/toyota_control.py`
-  with the guard model (verify the Advanced Remote anchor set, open the ⋯ modal if needed, refuse on
-  mismatch; trunk lock/unlock disambiguated by label since they share an id). Resolution-independent.
-- ✅ **Real result feedback wired** — `await_result()` reads `dumpsys notification --noredact` and the
-  TextGrid bridge (`server/app.py`) replies with Toyota's actual push text, not the "Sending…" spinner.
-  Offline unit-tested (node parse, id find, trunk label, notification match).
-- ⬜ **NEXT:** live-test the bridge with a real TextGrid number + public HTTPS URL; then OTP re-auth relay
-  (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` already raised → alert operator + relay code)
-  and a watchdog.
-- ⚠️ Dashboard showed **"1 subscription expiring"** — keep an eye on the Remote Connect subscription
+- ✅ GCP VM, nested virt + KVM, emulator boots hardware-accelerated; rooted (Magisk), logged into the app
+- ✅ **Public front door LIVE:** `toyota.tabulasms.com` → Cloudflare Tunnel → the webhook; TextGrid number
+  `+18457128867`'s smsUrl points at it; `X-TextGrid-Signature` verified (see `server/textgrid_auth.py`)
+- ✅ **Commands by resource-id + guard** (`server/toyota_control.py`): scrolls to reveal the Remote panel /
+  opens the ⋯ Advanced Remote modal, taps by id, refuses on mismatch; all 9 commands; trunk disambiguated
+  by label. Real result read from `dumpsys notification` (`await_result`) → SMS reply.
+- ✅ **Reboot-durable, VERIFIED:** `toyota-rig` systemd service (`scripts/host/rig-supervisor.sh`) +
+  `toyotafrida` Magisk module bring the whole rig up untended on a VM reboot (see the reboot section below).
+- ✅ **CI/CD:** tests + Claude PR review + IAP deploy-on-merge (`.github/workflows/`, `docs/CICD.md`).
+- ⬜ **NEXT:** OTP re-auth relay (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` → alert + relay
+  code); a watchdog (use `/health` + notification-shade); optional quick-button fast path (skip the modal
+  for Lock/Unlock/Start).
+- ⚠️ Dashboard shows **"1 subscription expiring"** — keep an eye on the Remote Connect subscription
 
 Full live state + the exact resume checklist is in memory `toyota-gcp-rig-state` and in
 `docs/PRODUCTION.md`.
@@ -60,11 +55,19 @@ Full live state + the exact resume checklist is in memory `toyota-gcp-rig-state`
   FCM exemptions) are **dev-only and NOT used on the rig**. Only the root + anti-tamper **bypass**
   (`scripts/frida/toyota_bypass.js`, kept attached) is always required.
 
-### Bring-up after a VM stop/reboot (what does NOT persist)
-See the step-by-step in memory `toyota-gcp-rig-state`. Summary: start VM → re-open IAP tunnels → boot
-emulator under Xvfb with `-cores 4 -memory 6144` → **unlock keyguard with the device PIN** (required before
-the app is spawnable — credential-encrypted storage) → `su -c setenforce 0` + start frida-server as root →
-`systemctl start toyota-frida` → if blank Flutter splash hangs, `systemctl restart toyota-frida` once.
+### Bring-up after a VM stop/reboot — now AUTOMATIC (2026-10-06)
+The whole rig comes up on reboot with **zero manual steps**, verified by a real `sudo reboot`. The enabled
+systemd service **`toyota-rig`** (`scripts/host/rig-supervisor.sh`) boots the headless emulator → unlocks the
+keyguard (PIN) → waits for frida-server → spawn-gates the app under the bypass with re-spawn.
+**`toyota-sms`** (webhook) and **`cloudflared`** (tunnel) are also enabled. You only need to **start the VM**
+(it's stopped to save cost) — then re-open IAP tunnels from the PC if you want to drive it manually.
+
+⚠️ **Why frida-server MUST come from the Magisk module `toyotafrida`, not a manual `su`:** plain `su` on this
+build grants root with `CapEff=0` (zero capabilities), so a su-started frida-server can't load SELinux policy
+and **every spawn fails** (`InvocationTargetException` / "Unable to save SELinux policy"). The Magisk boot
+module runs frida-server in magiskd's full-cap context — that was the fix for the 2026-10-06 outage. If spawn
+ever breaks again, check `su -c 'grep CapEff /proc/$(pidof frida-server)/status'` (want `000001ffffffffff`).
+Details in `docs/PRODUCTION.md` → Durability automation.
 
 ### Hard-won sizing lesson
 Emulator **must use 4 cores** (`hw.cpu.ncore=4` + `-cores 4`) and **6 GB RAM**. With 2 cores the dashboard
@@ -110,7 +113,8 @@ docs/
 .github/workflows/ — ci.yml (tests) · claude-review.yml (PR review) · deploy.yml (merge→rig over IAP)
 scripts/frida/   — toyota_bypass.js (anti-tamper; the ONLY frida piece needed on prod) + debug loggers + config template
 scripts/device/  — Magisk boot module + CA install (CA is dev-only)
-scripts/host/    — emulator boot, app launch, per-command taps (resource-id, via the server module), supervisor
+scripts/host/    — rig-supervisor.sh (Linux/GCP: the `toyota-rig` service — boot emulator, unlock, spawn-gate),
+                   supervisor.sh (Windows/dev equivalent), emulator boot, per-command taps, capture_screen
 scripts/deploy/  — remote_deploy.sh (runs on the VM; git pull + venv + restart ONLY the webhook service)
 server/          — FastAPI TextGrid webhook: verify sender → parse keyword → tap → read push → reply
                    (app.py + textgrid_auth.py signature verify + toyota_control.py taps)
