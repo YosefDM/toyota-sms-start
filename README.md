@@ -148,3 +148,5 @@ security techniques (Frida instrumentation, certificate unpinning, root-detectio
 official app in an automated environment — it is not a tool for accessing anyone else's vehicle. Binaries
 (the APK, images, `frida-server`), decompiled sources, and all secrets/credentials are intentionally excluded
 from this repo (see `.gitignore`).
+
+<!-- CI review smoke test — safe to delete -->
