@@ -23,7 +23,7 @@ by **SMS**.
 
 ```
   ┌────────────┐   SMS     ┌──────────┐   webhook   ┌──────────────────────────────────┐
-  │ any phone  │ ────────► │  Twilio  │ ──────────► │  always-on controller            │
+  │ any phone  │ ────────► │ TextGrid │ ──────────► │  always-on controller            │
   └────────────┘  "TOYOTA   └──────────┘             │                                  │
                    START"                            │  1. verify sender + parse keyword│
                                                      │  2. tap the matching button in   │
@@ -100,7 +100,7 @@ machine that supports hardware-accelerated Android emulation (KVM / nested virtu
 6. **Launch the app under Frida** with the anti-tamper hook. → `scripts/host/run-frida.sh`
 7. **Log in** with your Toyota account once; the session persists.
 8. **Map the commands** — each Remote Connect action is a long-press on the app's UI. → `scripts/host/commands.sh`
-9. **(Production)** Wire up the Twilio webhook and make the setup auto-start on boot.
+9. **(Production)** Wire up the TextGrid webhook and make the setup auto-start on boot.
    → [`docs/PRODUCTION.md`](docs/PRODUCTION.md)
 
 > **Full step-by-step with every pitfall and its fix:** [`docs/SETUP.md`](docs/SETUP.md). If your server's
@@ -121,7 +121,7 @@ scripts/
   device/         — on-device helpers (system CA install for TLS-inspecting networks)
   host/           — emulator boot, app launch, and per-command UI taps
   deploy/         — on-VM deploy script run by CI (git pull + venv + restart the webhook service)
-server/           — the Twilio SMS webhook: verify sender → parse keyword → tap the app's button → reply
+server/           — the TextGrid SMS webhook: verify sender → parse keyword → tap the app's button → reply
 .github/workflows/ — CI (tests), automated Claude PR review, and deploy-to-rig on merge (see docs/CICD.md)
 ```
 
@@ -135,7 +135,7 @@ server/           — the Twilio SMS webhook: verify sender → parse keyword �
 | Logged in, remote command reaches the car | ✅ **verified** |
 | Per-command UI taps — all 9 commands, by resource-id + guard model | ✅ done |
 | Real success/failure feedback from the app's push notification | ✅ built |
-| Twilio SMS bridge (sender allowlist, confirmation, replies) | 🟨 built — `server/`, needs live test with a number |
+| TextGrid SMS bridge (sender allowlist, confirmation, replies, signature verify) | 🟨 built — `server/`, needs live test with a number |
 | CI + automated Claude PR review + deploy-to-rig on merge | ✅ built — `.github/workflows/` |
 | Auto-start / reboot-survivable production setup | ⬜ todo |
 

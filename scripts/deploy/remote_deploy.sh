@@ -49,10 +49,10 @@ ASUSER
 
 # 3) (re)write the systemd unit, rendered from env so nothing user/path-specific is committed.
 #    EnvironmentFile has a leading '-' so it's optional: the service still starts before a real
-#    .env (with Twilio token + allowlist) is placed at $APP_DIR/server/.env.
+#    .env (with the TextGrid webhook secret + allowlist) is placed at $APP_DIR/server/.env.
 sudo tee "/etc/systemd/system/${SERVICE}.service" >/dev/null <<UNIT
 [Unit]
-Description=Toyota SMS Remote - Twilio webhook (FastAPI). UI-only control of the Toyota app.
+Description=Toyota SMS Remote - TextGrid webhook (FastAPI). UI-only control of the Toyota app.
 After=network-online.target
 Wants=network-online.target
 

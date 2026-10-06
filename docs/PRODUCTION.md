@@ -1,6 +1,6 @@
 # PRODUCTION — always-on server runbook
 
-Goal: the rig survives reboots and runs unattended on an always-on box, with a Twilio SMS front door.
+Goal: the rig survives reboots and runs unattended on an always-on box, with a TextGrid SMS front door.
 
 ## Host requirements
 
@@ -131,7 +131,7 @@ Design the re-auth path (not optional):
    "For your security, you have been signed out" / "Sign In" / "Register". The command dispatcher must
    check for this and **refuse to tap** (and trigger re-auth) rather than acting on the wrong screen.
 2. **Alert** the operator by SMS: "Toyota session expired — reply TOYOTA CODE <otp> to sign back in."
-3. **OTP relay**: operator receives the OTP on their phone and texts it to the Twilio number; the server
+3. **OTP relay**: operator receives the OTP on their phone and texts it to the TextGrid number; the server
    types email (stored), password (stored in a secret manager), then the relayed OTP into the login screens
    (all captured in docs/UI-MAP.md). Keep credentials in a secrets store, never in the repo.
 
@@ -170,15 +170,16 @@ The app's authoritative success/failure signal is a **push notification** from T
 3. Then the dispatcher reads the notification shade (`dumpsys notification` / a NotificationListener) to
    report real success/failure over SMS. Until FCM is confirmed, use "treat-as-sent" feedback.
 
-## Twilio bridge (TODO)
+## TextGrid bridge (built — `server/`)
 
-- Twilio number → inbound-SMS webhook → small service (FastAPI) on the box (public URL via Cloudflare
-  Tunnel / reverse proxy).
-- Parse keyword (`TOYOTA START`/`LOCK`/`UNLOCK`/`HAZARDS`...), **whitelist the sender's number**, optionally
-  require a PIN/keyword.
-- Dispatch → the matching **UI long-press** from `scripts/host/commands.sh` (⛔ UI only — never an API call).
-- Reply via TwiML with success/the observed app state so the basic phone gets feedback.
-- Rate-limit; add a confirmation step for Unlock.
+- TextGrid number's smsUrl → inbound-SMS webhook → FastAPI service on the box (public URL via Cloudflare
+  Tunnel), bound to `127.0.0.1:8080`.
+- Verifies the `X-TextGrid-Signature` against the raw body (`textgrid_auth.py` — NOT Twilio's scheme),
+  **allowlists the sender's number**, and requires a confirmation word for Unlock/Trunk.
+- Dispatch → the matching **UI long-press** by resource-id via `toyota_control.py` (⛔ UI only — never an API call).
+- Replies via TwiML with Toyota's real push-notification text (or treat-as-sent if none arrives in time).
+- Per-sender rate limit. Outbound (operator alerts / OTP relay) will use the Twilio SDK pointed at
+  `api.textgrid.com` — see `.env.example`.
 
 ## Watchdog
 
@@ -204,6 +205,6 @@ The app's authoritative success/failure signal is a **push notification** from T
 - [x] Auto-unlock keyguard on boot (PIN via `input`; digit-tap fallback noted if `input text` is ignored)
 - [ ] Validate with one real reboot (also the clean moment to confirm FCM notifications light up)
 - [ ] Per-command tap: harden panel navigation + find-by-resource-id (from docs/UI-MAP.md); non-blocking "Sending" is fine
-- [ ] Twilio webhook live test (server/ built; needs a number + public HTTPS URL)
+- [ ] TextGrid webhook live test (server/ built; needs a number + public HTTPS URL)
 - [ ] OTP re-auth path (detect LoginActivity → SMS-alert → OTP relay); tick "Keep me signed in"
 - [ ] Watchdog + operator alerting (use /health + notification-shade reads)
