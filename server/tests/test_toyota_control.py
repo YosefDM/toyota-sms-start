@@ -102,12 +102,12 @@ class StatusParsing(unittest.TestCase):
 
     def test_format_status(self):
         st = {"vehicle": "Yosef's Camry", "range": "200 mi", "tires": "Good",
-              "doors": "Locked", "windows": "Closed", "trunk": "Closed",
-              "updated": "Updated 22 minutes ago"}
+              "doors": "Locked", "windows": "Closed", "trunk": "Closed"}
         out = tc.format_status(st)
         self.assertIn("Doors: Locked", out)
         self.assertIn("Range: 200 mi", out)
         self.assertIn("Trunk: Closed", out)
+        self.assertNotIn("Updated", out)  # the freshness line is intentionally never included
 
     def test_format_status_empty(self):
         self.assertIn("Couldn't read", tc.format_status({}))
