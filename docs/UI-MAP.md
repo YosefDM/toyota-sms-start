@@ -76,6 +76,27 @@ OADashboardActivity (home)
 
 ---
 
+## Screen: remote-start "Caution" safety sheet  ✅ handled
+
+A one-time bottom-sheet that **remote START (and remote climate) interposes** after the long-press, before
+the request is sent to the car. Until it's confirmed, the long-press opens this modal and sends **nothing** —
+which silently swallowed START and then blocked every later command (the modal covered the panel). ⚠️ Unlike
+the rest of the app, **this sheet carries NO resource-ids** — every node's `resource-id` is empty — so it must
+be matched by **visible text**.
+
+- **Activity:** still `OADashboardActivity` (it's a bottom-sheet overlay, not a new activity).
+- **Recognize it by:** title text `Caution` + the ventilation warning (`"…safe, ventilated area…"`) **and** a
+  `Continue` button present.
+- **Elements (this build, 720px-wide emulator):** checkbox `content-desc="Do not show this message again"`
+  (center ~56,970) with label `Don't tell me again.`; **Cancel** (~360,1074); **Continue** (~360,1184).
+- **Handling** (`toyota_control.py::_dismiss_caution_dialog`): tick "Do not show this message again" (best-effort,
+  so it stops reappearing), then tap **Continue** so the command actually goes through. Wired into `execute()`:
+  START waits up to 6 s for the sheet to animate in; other commands do one cheap no-wait check as a safety net.
+- Verified live: START now reaches the car and returns a real result (e.g. Toyota's *"Remote command failed —
+  ensure the vehicle is secured… [D1]"* when the car refuses, vs. the earlier silent no-op).
+
+---
+
 ## Login / signed-out flow  (captured)
 
 The controller must recognize these to (a) refuse to tap car buttons when signed out and (b) drive re-auth.
@@ -109,6 +130,8 @@ These should each be captured so the guard can positively recognize a "do NOT ta
 - [x] **Verified Links** onboarding dialog — captured.
 - [ ] **OTP screen** — conditional; didn't appear on a trusted-device re-login; capture when next seen.
 - [x] **Background Location Permission** dialog — captured.
+- [x] **Remote-start "Caution" safety sheet** — captured + handled (see its section above). No resource-ids;
+      matched by text; auto-dismissed (tick "don't show again" + Continue) in `execute()`.
 - [ ] **Error/blocking dialogs** seen during bring-up: "Unsafe Network Detected", "Downtime", the
       "app does not support rooted devices" kill dialog, "requires a device unlock PIN" (reproduce only if needed).
 - [x] **Advanced Remote entry point** — found: ⋯ "More Horizontal" at (902,929) on the Remote tab.
