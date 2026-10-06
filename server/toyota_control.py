@@ -160,6 +160,15 @@ def _present_ids(nodes: list[dict]) -> set[str]:
     return {n["id"] for n in nodes if n["id"]}
 
 
+_DASHBOARD_TABS = {"ID_TAB_STATUS", "ID_TAB_REMOTE", "ID_TAB_HEALTH"}
+
+
+def _on_dashboard(nodes: list[dict]) -> bool:
+    """True when the dashboard shell (the Status/Remote/Health tab bar) is visible — i.e. no bottom
+    sheet or modal is covering it."""
+    return bool(_DASHBOARD_TABS & _present_ids(nodes))
+
+
 def _find(nodes: list[dict], rid: str, label: str | None = None) -> tuple[int, int] | None:
     """Center of the node with this resource-id (and matching text/desc when `label` disambiguates)."""
     for n in nodes:
@@ -262,6 +271,26 @@ def _dismiss_caution_dialog(max_wait: float = 6.0) -> bool:
 def _assert_logged_in(activity: str) -> None:
     if "LoginActivity" in activity or "FRMainActivity" in activity:
         raise NotLoggedIn("app is signed out (login/OTP screen) — re-auth required before any command")
+
+
+def _ensure_dashboard() -> list[dict]:
+    """Return to the dashboard shell (Status/Remote/Health tabs), closing any bottom-sheet/modal that
+    covers the tabs — e.g. the Advanced Remote sheet is left open after a command, and it hides the tab
+    bar. Without this, read_status() can't find the Status tab and silently returns nothing. Presses
+    BACK to dismiss the overlay (only while the tabs are NOT visible, so we never background the app from
+    the dashboard root); relaunches the app as a last resort. Returns the live node list."""
+    nodes = _nodes(_ui_dump())
+    for _ in range(3):
+        if _on_dashboard(nodes):
+            return nodes
+        _adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        time.sleep(1.5)
+        nodes = _nodes(_ui_dump())
+    if not _on_dashboard(nodes):
+        _adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1", timeout=20)
+        time.sleep(6)
+        nodes = _nodes(_ui_dump())
+    return nodes
 
 
 def ensure_on_advanced_remote() -> list[dict]:
@@ -455,7 +484,10 @@ def read_status() -> dict:
         time.sleep(6)
         _assert_logged_in(_foreground_activity())
 
-    nodes = _nodes(_ui_dump())
+    # Close any open sheet/modal (e.g. the Advanced Remote panel left up after a command) so the tab
+    # bar is reachable, then select the Status tab. Skipping this was why STATUS silently returned
+    # nothing whenever the app was sitting on the Advanced Remote modal.
+    nodes = _ensure_dashboard()
     st = _find(nodes, "ID_TAB_STATUS")
     if st:
         _adb("shell", "input", "tap", str(st[0]), str(st[1]))
