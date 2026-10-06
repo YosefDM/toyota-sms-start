@@ -1,34 +1,97 @@
 name: Claude Code Review
 
-# Automated review on every pull request, using the same /code-review skill you run locally.
-# Project rules in CLAUDE.md (incl. the UI-only hard rule) are in Claude's context during review.
+# Automated review on every pull request. Adapted from the smspilot workflow: a senior-engineer
+# review prompt with a real quality bar, posted as one comprehensive PR comment via `gh pr comment`,
+# with read-only repo tools so the reviewer can verify claims, and primary/fallback token failover.
+# Project rules in CLAUDE.md (incl. the UI-only hard rule) are in the reviewer's context.
 #
-# Auth: a Claude subscription OAuth token in the CLAUDE_CODE_OAUTH_TOKEN secret
-#   (generate with `claude setup-token`). The Claude GitHub App must be installed on the repo
-#   so the action can post comments — see docs/CICD.md.
-# Note: on public repos, GitHub withholds secrets from fork PRs, so this runs only on PRs from
-#   branches in this repo (fine for a solo repo).
+# Auth: a Claude subscription OAuth token in CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`); the Claude
+# GitHub App (installed) provides the write access used to post the comment.
+# Note: on public repos, GitHub withholds secrets from fork PRs, so this runs only on PRs from branches
+# in this repo (fine for a solo repo).
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
-  review:
+  claude-review:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
       issues: read
       id-token: write
+
+    # Prompt + args shared verbatim by the primary and fallback attempts, so the two accounts can't drift.
+    env:
+      REVIEW_PROMPT: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ github.event.pull_request.number }}
+
+        You are a senior engineer doing ONE comprehensive review pass on this PR.
+
+        Report ONLY issues that genuinely matter:
+        - Correctness bugs that would produce wrong behavior
+        - Security vulnerabilities
+        - Data loss, breaking changes, or migration hazards
+        - Clear violations of the conventions in this repo's CLAUDE.md / docs
+          (especially the HARD RULE: car actions must go through the app UI, never a raw API call)
+
+        Do NOT report:
+        - Style preferences, naming nitpicks, or formatting
+        - Speculative "could be cleaner" suggestions that aren't real defects
+        - Anything you are not highly confident about
+
+        Critical rules:
+        - It is a SUCCESS to find nothing. If there are no issues meeting the
+          bar above, reply with exactly "✅ No blocking issues found." and STOP.
+          Do not manufacture issues to seem useful.
+        - Be exhaustive in THIS pass. List every qualifying issue now, ordered
+          by severity (Blocker / High / Medium). Do not hold findings back to
+          surface on a later run — the author should be able to fix everything
+          in a single round.
+        - For each issue give: severity, file:line, a one-line reason, AND a
+          concrete fix (a code snippet or specific change). If you cannot
+          articulate a concrete fix, the finding is not real — drop it.
+
+        Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+
+      # Read/Grep/Glob let the reviewer verify claims against the whole repo instead of burning turns on
+      # denied tool calls. Everything here is read-only: no Write/Edit, no shell that can mutate.
+      CLAUDE_ARGS: '--model claude-opus-4-8[1m] --allowed-tools "Read,Grep,Glob,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(grep:*),Bash(rg:*)"'
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - uses: anthropics/claude-code-action@v1
+
+      # Primary Claude subscription. continue-on-error so a usage-limit (429) on this account doesn't
+      # fail the job outright — the fallback step picks it up. steps.primary.outcome still reports
+      # 'failure' for the gate below even though the step's own conclusion becomes 'success'.
+      - name: Run Claude Code Review (primary account)
+        id: primary
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
-          plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
+          # This repo is PUBLIC — Actions logs are world-readable, so keep the model's full output
+          # hidden. (smspilot is private and sets this true for debuggability.) Flip to true only if
+          # you accept the review reasoning being publicly visible in the run log.
+          show_full_output: false
+          prompt: ${{ env.REVIEW_PROMPT }}
+          claude_args: ${{ env.CLAUDE_ARGS }}
+
+      # Fallback to a second subscription when the primary attempt fails. We fail over on ANY primary
+      # failure (review failures are overwhelmingly throttle/transient). If BOTH fail, this step (no
+      # continue-on-error) turns the job red. Inert until CLAUDE_CODE_OAUTH_TOKEN_FALLBACK exists — an
+      # empty token just fails like the primary, so merging ahead of the secret is harmless.
+      - name: Run Claude Code Review (fallback account)
+        if: steps.primary.outcome == 'failure'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          show_full_output: false
+          prompt: ${{ env.REVIEW_PROMPT }}
+          claude_args: ${{ env.CLAUDE_ARGS }}
