@@ -36,7 +36,7 @@ NotificationRecord(0x1a: pkg=com.google.android.gms user=0 key=0|com.google.andr
 NotificationRecord(0x2b: pkg=com.toyota.oneapp user=0 id=7 key=0|com.toyota.oneapp|7|null|12345)
       creationTime=1696599999123
       android.title=2025 Camry Hybrid
-      android.text=The vehicle is now unlocked. [DL0]
+      android.text=String (The vehicle is now unlocked. [DL0])
 NotificationRecord(0x3c: pkg=com.toyota.oneapp user=0 id=6 key=0|com.toyota.oneapp|6|null|12345)
       mWhen=1696500000000
       android.title=2025 Camry Hybrid
@@ -98,6 +98,9 @@ class NotificationResult(unittest.TestCase):
         res = tc.await_result(since_ms=1696599999000, timeout=0, poll=0)
         self.assertIsNotNone(res)
         self.assertIn("unlocked", res["text"])
+        # the dumpsys "String (...)" wrapper must be unwrapped for a clean SMS reply
+        self.assertFalse(res["text"].startswith("String ("))
+        self.assertEqual(res["text"], "The vehicle is now unlocked. [DL0]")
 
     def test_rejects_stale_older_notification(self):
         # A command issued later than any existing notification must not match an old one.

@@ -164,6 +164,25 @@ def _find_desc(nodes: list[dict], desc: str) -> tuple[int, int] | None:
     return None
 
 
+def _screen_size() -> tuple[int, int]:
+    try:
+        m = re.search(r"(\d+)x(\d+)", _adb("shell", "wm", "size", timeout=8))
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    return (1080, 1920)
+
+
+def _scroll_up() -> None:
+    """Scroll the panel content up to reveal controls below the fold (the Remote quick-buttons and
+    the ⋯ entry sit under the subscription banner / bottom nav on the dashboard)."""
+    w, h = _screen_size()
+    x = w // 2
+    _adb("shell", "input", "swipe", str(x), str(int(h * 0.72)), str(x), str(int(h * 0.33)), "400")
+    time.sleep(1.5)
+
+
 # --------------------------------------------------------------------------- navigation guard
 
 def _assert_logged_in(activity: str) -> None:
@@ -198,11 +217,18 @@ def ensure_on_advanced_remote() -> list[dict]:
         if ANCHOR_IDS <= _present_ids(nodes):
             return nodes
 
-    # Open the Advanced Remote modal via the ⋯ "More Horizontal" control.
-    more = _find_desc(nodes, "More Horizontal")
-    if more:
-        _adb("shell", "input", "tap", str(more[0]), str(more[1]))
-        time.sleep(3)
+    # The quick buttons and the ⋯ "More Horizontal" entry sit below the fold on the Remote tab, so
+    # scroll the panel up (a few times) to reveal them, then open the Advanced Remote modal — it
+    # carries the full resource-id set for every command. Re-dump after each step.
+    for _ in range(4):
+        more = _find_desc(nodes, "More Horizontal")
+        if more:
+            _adb("shell", "input", "tap", str(more[0]), str(more[1]))
+            time.sleep(3)
+            nodes = _nodes(_ui_dump())
+            if ANCHOR_IDS <= _present_ids(nodes):
+                return nodes
+        _scroll_up()
         nodes = _nodes(_ui_dump())
         if ANCHOR_IDS <= _present_ids(nodes):
             return nodes
@@ -263,8 +289,13 @@ def _extra(block: str, key: str) -> str:
     m = re.search(re.escape(key) + r"=(.*)", block)
     if not m:
         return ""
-    val = _EXTRA_PREFIX_RE.sub("", m.group(1).strip()).strip()
-    return val.strip('"')
+    val = m.group(1).strip()
+    # dumpsys renders CharSequence extras in a few shapes; unwrap them:
+    #   String (12) "the text"   |   String (the text)   |   the text
+    mm = re.match(r'^String \(\d+\)\s*"?(.*?)"?$', val) or re.match(r"^String \((.*)\)$", val)
+    if mm:
+        val = mm.group(1)
+    return _EXTRA_PREFIX_RE.sub("", val).strip().strip('"')
 
 
 def _toyota_notifications() -> list[dict]:
