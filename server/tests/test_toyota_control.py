@@ -113,6 +113,56 @@ class StatusParsing(unittest.TestCase):
         self.assertIn("Couldn't read", tc.format_status({}))
 
 
+DASH_XML = """<?xml version='1.0'?><hierarchy>
+<node resource-id="com.toyota.oneapp:id/ID_TAB_REMOTE" text="Remote" bounds="[21,398][237,482]"/>
+<node resource-id="com.toyota.oneapp:id/ID_TAB_STATUS" text="Status" bounds="[251,398][467,482]"/>
+<node resource-id="com.toyota.oneapp:id/ID_TAB_HEALTH" text="Health" bounds="[481,398][697,482]"/>
+</hierarchy>"""
+
+
+class DashboardNav(unittest.TestCase):
+    def test_on_dashboard_detects_tab_bar(self):
+        self.assertTrue(tc._on_dashboard(tc._nodes(DASH_XML)))
+        # The Advanced Remote modal (UI_XML) covers the tab bar → not "on dashboard".
+        self.assertFalse(tc._on_dashboard(tc._nodes(UI_XML)))
+
+    def test_ensure_dashboard_backs_out_of_a_covering_modal(self):
+        dumps = [UI_XML, DASH_XML]   # modal first; after a BACK the tabs appear
+        keys: list[str] = []
+        orig_adb, orig_dump = tc._adb, tc._ui_dump
+
+        def fake_adb(*a, **k):
+            if a[:3] == ("shell", "input", "keyevent"):
+                keys.append(a[3])
+            return ""
+
+        tc._adb = fake_adb
+        tc._ui_dump = lambda: dumps.pop(0) if len(dumps) > 1 else dumps[0]
+        try:
+            nodes = tc._ensure_dashboard()
+        finally:
+            tc._adb, tc._ui_dump = orig_adb, orig_dump
+        self.assertIn("KEYCODE_BACK", keys)
+        self.assertTrue(tc._on_dashboard(nodes))
+
+    def test_ensure_dashboard_noop_when_tabs_already_visible(self):
+        keys: list[str] = []
+        orig_adb, orig_dump = tc._adb, tc._ui_dump
+
+        def fake_adb(*a, **k):
+            if a[:3] == ("shell", "input", "keyevent"):
+                keys.append(a[3])
+            return ""
+
+        tc._adb = fake_adb
+        tc._ui_dump = lambda: DASH_XML
+        try:
+            tc._ensure_dashboard()
+        finally:
+            tc._adb, tc._ui_dump = orig_adb, orig_dump
+        self.assertEqual(keys, [])  # already on the dashboard → never press BACK
+
+
 class UIParsing(unittest.TestCase):
     def setUp(self):
         self.nodes = tc._nodes(UI_XML)
