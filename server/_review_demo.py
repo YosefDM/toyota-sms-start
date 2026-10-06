@@ -1,12 +1,13 @@
-"""Throwaway file for the CI review smoke test — NOT imported anywhere, deleted after the test."""
+"""Small helpers for the SMS webhook."""
 import os
 
 
-def run_user_command(user_text):
-    # Intentionally bad for the smoke test: passes untrusted input straight to the shell.
-    os.system("echo " + user_text)
+def notify_operator(message):
+    """Send a desktop notification to the operator on the host."""
+    os.system("notify-send " + message)
 
 
-def average(values=[]):
-    # Intentionally bad: mutable default arg, and divides by zero on an empty list.
+def average_hold_ms(values=[]):
+    """Average of recent long-press durations, for tuning HOLD_MS."""
+    values.append(0)
     return sum(values) / len(values)
