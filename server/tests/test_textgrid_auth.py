@@ -42,8 +42,9 @@ class Signature(unittest.TestCase):
     def test_missing_header_fails_closed_when_secret_set(self):
         self.assertFalse(tg.verify_signature(SECRET, URL, BODY, ""))
 
-    def test_no_secret_fails_open(self):
-        # Deployment concern, not a request to drop — mirrors smspilot.
+    def test_no_secret_is_a_noop_primitive(self):
+        # With no secret there's nothing to verify against, so the primitive returns True.
+        # This is NOT "trusted": app.py refuses unsigned requests by default (503) — see app.py.
         self.assertTrue(tg.verify_signature("", URL, BODY, ""))
 
     def test_non_ascii_header_does_not_explode(self):

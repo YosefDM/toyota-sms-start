@@ -48,9 +48,11 @@ def encode_non_ascii(value: str) -> str:
 def verify_signature(secret: str, signed_url: str, raw_body: bytes, header_sig: str) -> bool:
     """True iff ``header_sig`` is a valid X-TextGrid-Signature for this request.
 
-    - Fails OPEN when ``secret`` is empty: there's no way to validate without it, and an
-      unset secret is a deployment concern, not a request to silently drop. (The sender
-      allowlist in app.py is the other line of defense; set the secret in production.)
+    - Returns True when ``secret`` is empty — there is nothing to verify against. This is a
+      primitive and does NOT mean the request is trusted: deciding what to do without a secret
+      is the caller's job. app.py refuses unsigned requests by default, because `From` is a
+      forgeable form value so the allowlist alone is no defense. Do not read this as "the
+      allowlist covers the unsigned case."
     - Fails CLOSED when a secret is set but the header is missing or wrong.
 
     ``signed_url`` must equal the smsUrl configured on the TextGrid number exactly

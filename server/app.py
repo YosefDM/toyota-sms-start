@@ -34,6 +34,10 @@ TEXTGRID_WEBHOOK_SECRET = os.environ.get("TEXTGRID_WEBHOOK_SECRET", "")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "")  # the exact smsUrl set on the TextGrid number
 ALLOWED_NUMBERS = {n.strip() for n in os.environ.get("ALLOWED_NUMBERS", "").split(",") if n.strip()}
 RATE_LIMIT_SECONDS = int(os.environ.get("RATE_LIMIT_SECONDS", "8"))
+# Dev-only escape hatch: run WITHOUT signature verification. Off by default. Never set in production —
+# without the signature, `From` is an unauthenticated, forgeable form value, so the allowlist alone would
+# let anyone who learns the URL unlock the car.
+ALLOW_UNSIGNED = os.environ.get("ALLOW_UNSIGNED", "").strip().lower() in ("1", "true", "yes")
 
 app = FastAPI(title="Toyota SMS Remote")
 _last_cmd_at: dict[str, float] = {}
@@ -59,13 +63,18 @@ async def sms(request: Request):
     # consume the stream before we could verify.
     raw = await request.body()
 
-    # 1) verify the request really came from TextGrid for the URL we expect
+    # 1) verify the request really came from TextGrid for the URL we expect.
+    #    Fail CLOSED when no secret is configured: `From` is a forgeable form value, so the allowlist
+    #    gives no protection without the signature — an unconfigured server must not act on unsigned input.
     if TEXTGRID_WEBHOOK_SECRET:
         sig = request.headers.get("X-TextGrid-Signature", "")
         if not tg.verify_signature(TEXTGRID_WEBHOOK_SECRET, PUBLIC_URL, raw, sig):
             return Response(status_code=403, content="bad signature")
+    elif ALLOW_UNSIGNED:
+        logger.warning("ALLOW_UNSIGNED is set — skipping signature verification. DEV ONLY; never in production.")
     else:
-        logger.warning("TEXTGRID_WEBHOOK_SECRET unset — skipping signature check (set it in production)")
+        logger.error("Refusing request: TEXTGRID_WEBHOOK_SECRET unset (set it, or ALLOW_UNSIGNED=1 for local dev only).")
+        return Response(status_code=503, content="server not configured: TEXTGRID_WEBHOOK_SECRET is required")
 
     # 2) parse the Twilio-style form params from the raw body
     form = dict(parse_qsl(raw.decode("utf-8", errors="replace")))
