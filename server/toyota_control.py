@@ -474,7 +474,7 @@ def _pair_value(nodes: list[dict], label: str, values: tuple[str, ...]) -> str |
 def read_status() -> dict:
     """Navigate to the Status tab and read the vehicle status (read-only, no actuation).
 
-    Returns a dict with any of: vehicle, range, tires, doors, windows, trunk, updated.
+    Returns a dict with any of: vehicle, range, tires, doors, windows, trunk.
     Scrolls the tab because the door/window/trunk tiles sit below the fold.
     """
     activity = _foreground_activity()
@@ -501,7 +501,6 @@ def read_status() -> dict:
         "doors": "vehicle_status_door_tile_sub_title",
         "windows": "vehicle_status_window_tile_sub_title",
         "trunk": "vehicle_status_trunk_tile_sub_title",
-        "updated": "vehicle_status_information_last_updated_time_text",
     }
     out: dict = {}
     for _ in range(5):
@@ -540,6 +539,4 @@ def format_status(st: dict) -> str:
         lines.append(f"Windows: {st['windows']}")
     if st.get("trunk"):
         lines.append(f"Trunk: {st['trunk']}")
-    if st.get("updated"):
-        lines.append(f"({st['updated'].lower()})")
     return "\n".join(lines)
