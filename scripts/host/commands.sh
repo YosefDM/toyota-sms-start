@@ -3,7 +3,7 @@
 # Usage: commands.sh start|lock|unlock|lock_trunk|unlock_trunk|lights|horn|buzzer|hazards
 #
 # Thin wrapper over server/toyota_control.py so this manual helper uses the SAME, tested logic as the
-# Twilio bridge: it locates each control by RESOURCE-ID (resolution-independent) with the guard model
+# TextGrid bridge: it locates each control by RESOURCE-ID (resolution-independent) with the guard model
 # (verify the Advanced Remote panel is up, refuse if not), instead of blind coordinates.
 set -eu
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"

@@ -8,17 +8,17 @@ Inbound SMS → verify sender → tap the Toyota app's button (UI only) → repl
 cd server
 python -m venv .venv && . .venv/bin/activate      # (Windows: .venv\Scripts\activate)
 pip install -r requirements.txt
-cp .env.example .env    # fill in TWILIO_AUTH_TOKEN, PUBLIC_URL, ALLOWED_NUMBERS
-uvicorn app:app --host 0.0.0.0 --port 8000
+cp .env.example .env    # fill in TEXTGRID_WEBHOOK_SECRET, PUBLIC_URL, ALLOWED_NUMBERS
+uvicorn app:app --host 127.0.0.1 --port 8080
 ```
 
-Expose it over HTTPS (Twilio requires https) via a reverse proxy or a Cloudflare/ngrok tunnel, then set that
-public URL as the **"A message comes in"** webhook (HTTP POST) on your Twilio number, and put the same URL in
-`PUBLIC_URL`.
+Expose it over HTTPS via a Cloudflare/ngrok tunnel, then set that public URL as the **smsUrl** (HTTP POST)
+on your TextGrid number, and put the exact same URL in `PUBLIC_URL` (it's part of the signed payload, so it
+must match byte-for-byte).
 
 ## Commands
 
-Text your Twilio number (a leading `TOYOTA` is optional):
+Text your TextGrid number (a leading `TOYOTA` is optional):
 
 | Text | Action |
 |---|---|
@@ -31,7 +31,8 @@ Text your Twilio number (a leading `TOYOTA` is optional):
 | `TRUNK YES` | unlock trunk (confirmation required) |
 
 Car-opening actions (`UNLOCK`, `TRUNK`) require a confirmation word (`YES`/`CONFIRM`) to avoid accidents.
-Senders not in `ALLOWED_NUMBERS` are rejected. Requests are signature-verified against `TWILIO_AUTH_TOKEN`.
+Senders not in `ALLOWED_NUMBERS` are rejected. Requests are signature-verified against
+`TEXTGRID_WEBHOOK_SECRET` (TextGrid's `X-TextGrid-Signature` scheme — see `textgrid_auth.py`).
 
 ## Health
 
@@ -39,8 +40,8 @@ Senders not in `ALLOWED_NUMBERS` are rejected. Requests are signature-verified a
 
 ## Notes
 
-- `toyota_control.py` holds the keyword→command map and the button coordinates (pixel_7 / 1080px / software
-  GPU). Re-dump and update if the app layout changes.
+- `toyota_control.py` holds the keyword→command map and finds each button by **resource-id** with the guard
+  model (resolution-independent); `textgrid_auth.py` verifies the inbound signature.
 - The emulator + app + Frida session must already be up and logged in (see the repo root `docs/`). This
   service only performs the taps; it does not boot the emulator or log in.
 - Hard rule: taps only, never a direct API call to the car.

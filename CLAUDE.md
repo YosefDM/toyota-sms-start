@@ -6,7 +6,7 @@ back onto the running rig, and what to do next. Deep detail lives in `docs/`; th
 ## What this is
 
 Control a **2025 Toyota Camry** by **SMS**. The owner carries a basic (non-smart) phone; they text keywords
-(`TOYOTA START`, `LOCK`, `UNLOCK`, `HAZARDS`, …) to a Twilio number; an always-on server taps the matching
+(`TOYOTA START`, `LOCK`, `UNLOCK`, `HAZARDS`, …) to a TextGrid number; an always-on server taps the matching
 button in the **official Toyota OneApp** running inside a rooted Android emulator, which makes the app's own
 authenticated request to Toyota. Problem → solution → setup is in `README.md`.
 
@@ -33,9 +33,9 @@ Status:
   with the guard model (verify the Advanced Remote anchor set, open the ⋯ modal if needed, refuse on
   mismatch; trunk lock/unlock disambiguated by label since they share an id). Resolution-independent.
 - ✅ **Real result feedback wired** — `await_result()` reads `dumpsys notification --noredact` and the
-  Twilio bridge (`server/app.py`) replies with Toyota's actual push text, not the "Sending…" spinner.
+  TextGrid bridge (`server/app.py`) replies with Toyota's actual push text, not the "Sending…" spinner.
   Offline unit-tested (node parse, id find, trunk label, notification match).
-- ⬜ **NEXT:** live-test the bridge with a real Twilio number + public HTTPS URL; then OTP re-auth relay
+- ⬜ **NEXT:** live-test the bridge with a real TextGrid number + public HTTPS URL; then OTP re-auth relay
   (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` already raised → alert operator + relay code)
   and a watchdog.
 - ⚠️ Dashboard showed **"1 subscription expiring"** — keep an eye on the Remote Connect subscription
@@ -103,7 +103,7 @@ README.md        — public portfolio front page (problem → solution → clean
 docs/
   SETUP.md       — full build guide, every pitfall + fix (dev machine)
   PRODUCTION.md  — always-on runbook: GCP host, Intel-only nested virt, IAP/CA access, headless rooting,
-                   VM sizing, per-boot persistence, session/OTP re-auth, FCM, Twilio, watchdog
+                   VM sizing, per-boot persistence, session/OTP re-auth, FCM, TextGrid, watchdog
   FINDINGS.md    — RE analysis: the 3 client-side protections, Play-Integrity=Stripe-only, hosts, commands
   UI-MAP.md      — screen map, command resource-ids, guard model, login/OTP flow
   CICD.md        — GitHub Actions: CI tests, Claude PR review, IAP deploy to the rig + secret setup
@@ -112,7 +112,8 @@ scripts/frida/   — toyota_bypass.js (anti-tamper; the ONLY frida piece needed 
 scripts/device/  — Magisk boot module + CA install (CA is dev-only)
 scripts/host/    — emulator boot, app launch, per-command taps (resource-id, via the server module), supervisor
 scripts/deploy/  — remote_deploy.sh (runs on the VM; git pull + venv + restart ONLY the webhook service)
-server/          — FastAPI Twilio webhook: verify sender → parse keyword → tap → read push → reply
+server/          — FastAPI TextGrid webhook: verify sender → parse keyword → tap → read push → reply
+                   (app.py + textgrid_auth.py signature verify + toyota_control.py taps)
   tests/         — offline unit tests (parsing/matching; no device needed)
 ```
 
@@ -123,7 +124,7 @@ server/          — FastAPI Twilio webhook: verify sender → parse keyword →
 - **Merge to `master` (server changes) → `deploy.yml`**: GitHub-hosted runner auths to GCP with a
   service-account key, tunnels in over **IAP**, and runs `scripts/deploy/remote_deploy.sh` on the VM.
   Restarts ONLY `toyota-sms.service` — emulator/frida/session untouched. No-ops (with a notice) until
-  the `GCP_*`/`APP_USER` secrets are set. The VM's `server/.env` (Twilio token, allowlist) is NOT
+  the `GCP_*`/`APP_USER` secrets are set. The VM's `server/.env` (TextGrid webhook secret, allowlist) is NOT
   deployed — it's managed by hand on the VM.
 Secrets, APKs, images, frida-server, CA/PEMs are **git-ignored** (`.gitignore`; note: no inline comments in
 gitignore — see memory `gitignore-no-inline-comments`). Repo is public (portfolio); keep IP/login out of it.
