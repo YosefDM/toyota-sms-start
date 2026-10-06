@@ -88,7 +88,18 @@ async def sms(request: Request):
     # 4) parse the command
     command, confirmed = tc.parse_command(body)
     if not command:
-        return _twiml("Unknown command. Try: START, LOCK, UNLOCK, LIGHTS, HAZARDS, HORN, TRUNK.")
+        return _twiml("Unknown command. Reply HELP for the list. (STATUS, START, LOCK, UNLOCK, ...)")
+
+    # 4a) info-only commands (read-only, no actuation, no rate limit)
+    if command == "help":
+        return _twiml(tc.HELP_TEXT)
+    if command == "status":
+        try:
+            return _twiml(tc.format_status(tc.read_status()))
+        except tc.NotLoggedIn:
+            return _twiml("The car app is signed out and needs re-authentication. The operator has been alerted.")
+        except tc.ControlError as e:
+            return _twiml(f"Couldn't read status: {e}")
 
     # 5) confirmation gate for car-opening actions
     pretty = command.replace("_", " ")

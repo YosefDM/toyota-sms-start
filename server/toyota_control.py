@@ -23,8 +23,10 @@ SERIAL = os.environ.get("ADB_SERIAL", "emulator-5554")
 PKG = "com.toyota.oneapp"
 HOLD_MS = int(os.environ.get("HOLD_MS", "3500"))
 
-# SMS keyword -> canonical command.
+# SMS keyword -> canonical command. (help/status are info-only; app.py handles them separately.)
 KEYWORD_ALIASES: dict[str, str] = {
+    "help": "help", "?": "help", "commands": "help", "menu": "help", "list": "help",
+    "status": "status", "stat": "status", "info": "status",
     "start": "start", "remote start": "start", "engine": "start",
     "lock": "lock",
     "unlock": "unlock", "open": "unlock",
@@ -34,6 +36,18 @@ KEYWORD_ALIASES: dict[str, str] = {
     "buzzer": "buzzer",
     "hazards": "hazards", "hazard": "hazards",
 }
+
+HELP_TEXT = (
+    "Toyota SMS commands (a leading TOYOTA is optional):\n"
+    "STATUS - range, tires, doors, windows, trunk\n"
+    "START - remote start\n"
+    "LOCK\n"
+    "UNLOCK YES - (needs YES to confirm)\n"
+    "LIGHTS, HAZARDS, HORN, BUZZER\n"
+    "TRUNK YES - unlock trunk (needs YES)\n"
+    "LOCK TRUNK - lock trunk\n"
+    "HELP - this list"
+)
 
 # Canonical command -> (resource-id, disambiguating label | None).
 # The two trunk buttons SHARE one resource-id, so they must be told apart by their label.
@@ -334,3 +348,100 @@ def await_result(since_ms: int, timeout: int | None = None, poll: float = 2.0) -
         if best is not None or time.time() >= deadline:
             return best
         time.sleep(poll)
+
+
+# --------------------------------------------------------------------------- status (read-only)
+
+def _text_by_id(nodes: list[dict], rid: str) -> str | None:
+    for n in nodes:
+        if n["id"] == rid and n["text"]:
+            return n["text"]
+    return None
+
+
+def _pair_value(nodes: list[dict], label: str, values: tuple[str, ...]) -> str | None:
+    """The value for a status tile: the matching text node sitting just below its label."""
+    labels = [n for n in nodes if n["text"] == label and n["center"]]
+    for ln in labels:
+        lx, ly = ln["center"]
+        best = None
+        for n in nodes:
+            if n["text"] in values and n["center"]:
+                vx, vy = n["center"]
+                if abs(vx - lx) <= 180 and 0 < vy - ly <= 130:
+                    if best is None or (vy - ly) < best[0]:
+                        best = (vy - ly, n["text"])
+        if best:
+            return best[1]
+    return None
+
+
+def read_status() -> dict:
+    """Navigate to the Status tab and read the vehicle status (read-only, no actuation).
+
+    Returns a dict with any of: vehicle, range, tires, doors, windows, trunk, updated.
+    Scrolls the tab because the door/window/trunk tiles sit below the fold.
+    """
+    activity = _foreground_activity()
+    _assert_logged_in(activity)
+    if PKG not in activity:
+        _adb("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1", timeout=20)
+        time.sleep(6)
+        _assert_logged_in(_foreground_activity())
+
+    nodes = _nodes(_ui_dump())
+    st = _find(nodes, "ID_TAB_STATUS")
+    if st:
+        _adb("shell", "input", "tap", str(st[0]), str(st[1]))
+        time.sleep(3)
+
+    # Each tile carries a stable sub-title resource-id with the status word — read by id (robust;
+    # the text nodes have degenerate bounds so spatial pairing is unreliable). Tiles span scroll
+    # positions, so collect across a few dumps, scrolling to bring the lower ones into the tree.
+    by_id = {
+        "tires": "vehicle_status_tire_pressure_tile_sub_title",
+        "doors": "vehicle_status_door_tile_sub_title",
+        "windows": "vehicle_status_window_tile_sub_title",
+        "trunk": "vehicle_status_trunk_tile_sub_title",
+        "updated": "vehicle_status_information_last_updated_time_text",
+    }
+    out: dict = {}
+    for _ in range(5):
+        nodes = _nodes(_ui_dump())
+        if "vehicle" not in out:
+            v = _text_by_id(nodes, "dashboard_vehicle_name")
+            if v:
+                out["vehicle"] = v
+        if "range" not in out:
+            rv = _text_by_id(nodes, "fuel_view_range_value_text")
+            if rv:
+                out["range"] = f"{rv} {_text_by_id(nodes, 'fuel_view_range_unit_text') or 'mi'}"
+        for key, rid in by_id.items():
+            if key not in out:
+                t = _text_by_id(nodes, rid)
+                if t:
+                    out[key] = t
+        if all(k in out for k in ("range", "tires", "doors", "windows", "trunk")):
+            break
+        _scroll_up()
+    return out
+
+
+def format_status(st: dict) -> str:
+    """One SMS from a read_status() dict."""
+    if not any(k in st for k in ("range", "doors", "windows", "trunk", "tires")):
+        return "Couldn't read the vehicle status — the Status tab didn't load. Try again in a moment."
+    lines = [st.get("vehicle", "Vehicle status") + ":"]
+    if st.get("range"):
+        lines.append(f"Range: {st['range']}")
+    if st.get("tires"):
+        lines.append(f"Tires: {st['tires']}")
+    if st.get("doors"):
+        lines.append(f"Doors: {st['doors']}")
+    if st.get("windows"):
+        lines.append(f"Windows: {st['windows']}")
+    if st.get("trunk"):
+        lines.append(f"Trunk: {st['trunk']}")
+    if st.get("updated"):
+        lines.append(f"({st['updated'].lower()})")
+    return "\n".join(lines)

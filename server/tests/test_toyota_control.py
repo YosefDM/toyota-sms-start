@@ -58,6 +58,60 @@ class ParseCommand(unittest.TestCase):
     def test_unknown(self):
         self.assertEqual(tc.parse_command("gibberish"), (None, False))
 
+    def test_help_and_status(self):
+        self.assertEqual(tc.parse_command("HELP")[0], "help")
+        self.assertEqual(tc.parse_command("?")[0], "help")
+        self.assertEqual(tc.parse_command("Toyota Status")[0], "status")
+        self.assertEqual(tc.parse_command("stat")[0], "status")
+
+
+STATUS_XML = """<?xml version='1.0'?><hierarchy>
+<node resource-id="com.toyota.oneapp:id/dashboard_vehicle_name" text="Yosef's Camry" bounds="[0,100][720,160]"/>
+<node resource-id="com.toyota.oneapp:id/fuel_view_range_value_text" text="200" bounds="[40,250][120,290]"/>
+<node resource-id="com.toyota.oneapp:id/fuel_view_range_unit_text" text="mi" bounds="[130,250][170,290]"/>
+<node text="Doors" bounds="[150,560][300,600]"/>
+<node resource-id="com.toyota.oneapp:id/vehicle_status_door_tile_sub_title" text="Locked" bounds="[150,600][320,601]"/>
+<node text="Windows" bounds="[150,700][330,740]"/>
+<node resource-id="com.toyota.oneapp:id/vehicle_status_window_tile_sub_title" text="Closed" bounds="[150,740][320,741]"/>
+<node text="Trunk" bounds="[150,850][280,890]"/>
+<node resource-id="com.toyota.oneapp:id/vehicle_status_trunk_tile_sub_title" text="Closed" bounds="[150,890][320,891]"/>
+<node text="Tire Pressure" bounds="[150,1000][420,1050]"/>
+<node resource-id="com.toyota.oneapp:id/vehicle_status_tire_pressure_tile_sub_title" text="Good" bounds="[150,1055][300,1056]"/>
+<node resource-id="com.toyota.oneapp:id/vehicle_status_information_last_updated_time_text" text="Updated 22 minutes ago" bounds="[200,1150][520,1190]"/>
+</hierarchy>"""
+
+
+class StatusParsing(unittest.TestCase):
+    def setUp(self):
+        self.nodes = tc._nodes(STATUS_XML)
+
+    def test_text_by_id(self):
+        self.assertEqual(tc._text_by_id(self.nodes, "fuel_view_range_value_text"), "200")
+
+    def test_tile_sub_title_ids(self):
+        self.assertEqual(tc._text_by_id(self.nodes, "vehicle_status_door_tile_sub_title"), "Locked")
+        self.assertEqual(tc._text_by_id(self.nodes, "vehicle_status_window_tile_sub_title"), "Closed")
+        self.assertEqual(tc._text_by_id(self.nodes, "vehicle_status_trunk_tile_sub_title"), "Closed")
+        self.assertEqual(tc._text_by_id(self.nodes, "vehicle_status_tire_pressure_tile_sub_title"), "Good")
+
+    def test_pair_value_tiles(self):
+        self.assertEqual(tc._pair_value(self.nodes, "Doors", ("Locked", "Unlocked")), "Locked")
+        self.assertEqual(tc._pair_value(self.nodes, "Windows", ("Closed", "Open")), "Closed")
+        self.assertEqual(tc._pair_value(self.nodes, "Trunk", ("Closed", "Open")), "Closed")
+        self.assertEqual(tc._pair_value(self.nodes, "Tire Pressure", ("Good", "Low")), "Good")
+
+    def test_format_status(self):
+        st = {"vehicle": "Yosef's Camry", "range": "200 mi", "tires": "Good",
+              "doors": "Locked", "windows": "Closed", "trunk": "Closed",
+              "updated": "Updated 22 minutes ago"}
+        out = tc.format_status(st)
+        self.assertIn("Doors: Locked", out)
+        self.assertIn("Range: 200 mi", out)
+        self.assertIn("Trunk: Closed", out)
+
+    def test_format_status_empty(self):
+        self.assertIn("Couldn't read", tc.format_status({}))
+
 
 class UIParsing(unittest.TestCase):
     def setUp(self):

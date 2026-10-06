@@ -22,13 +22,17 @@ Text your TextGrid number (a leading `TOYOTA` is optional):
 
 | Text | Action |
 |---|---|
+| `STATUS` | read-only report: range, tire pressure, doors, windows, trunk |
+| `HELP` (or `?`) | the command list |
 | `START` | remote start |
 | `LOCK` | lock doors |
 | `UNLOCK YES` | unlock doors (confirmation word required) |
 | `LIGHTS` | flash lights |
 | `HAZARDS` | hazards |
 | `HORN` | horn |
+| `BUZZER` | buzzer |
 | `TRUNK YES` | unlock trunk (confirmation required) |
+| `LOCK TRUNK` | lock trunk |
 
 Car-opening actions (`UNLOCK`, `TRUNK`) require a confirmation word (`YES`/`CONFIRM`) to avoid accidents.
 Senders not in `ALLOWED_NUMBERS` are rejected. Requests are signature-verified against
