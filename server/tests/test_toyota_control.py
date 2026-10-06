@@ -135,6 +135,62 @@ class UIParsing(unittest.TestCase):
             self.assertIsNotNone(tc._find(self.nodes, rid, label), f"{cmd} not found")
 
 
+CAUTION_XML = """<?xml version='1.0'?><hierarchy>
+<node text="Caution" bounds="[29,170][576,220]"/>
+<node text="Please make sure the vehicle is in a safe, ventilated area before using remote start and climate features." bounds="[31,262][689,892]"/>
+<node content-desc="Do not show this message again" bounds="[14,928][98,1012]"/>
+<node text="Don't tell me again." bounds="[102,951][348,989]"/>
+<node text="Cancel" bounds="[176,1032][544,1116]"/>
+<node text="Continue" bounds="[176,1142][544,1226]"/>
+</hierarchy>"""
+
+
+class CautionDialog(unittest.TestCase):
+    def test_detected_on_caution_sheet(self):
+        self.assertTrue(tc._caution_present(tc._nodes(CAUTION_XML)))
+
+    def test_not_detected_on_remote_panel(self):
+        # The normal Advanced Remote panel is not a Caution sheet.
+        self.assertFalse(tc._caution_present(tc._nodes(UI_XML)))
+
+    def test_find_text_center(self):
+        nodes = tc._nodes(CAUTION_XML)
+        self.assertEqual(tc._find_text(nodes, "Continue"), (360, 1184))
+        self.assertEqual(tc._find_text(nodes, "Cancel"), (360, 1074))
+
+    def test_checkbox_located_by_desc(self):
+        nodes = tc._nodes(CAUTION_XML)
+        self.assertEqual(tc._find_desc(nodes, "Do not show this message again"), (56, 970))
+
+    def test_dismiss_taps_checkbox_then_continue(self):
+        taps: list[tuple[int, int]] = []
+        orig_adb, orig_dump = tc._adb, tc._ui_dump
+
+        def fake_adb(*a, **k):
+            if a[:2] == ("shell", "input") and a[2] == "tap":
+                taps.append((int(a[3]), int(a[4])))
+            return ""
+
+        tc._adb = fake_adb
+        tc._ui_dump = lambda: CAUTION_XML
+        try:
+            handled = tc._dismiss_caution_dialog(max_wait=0)
+        finally:
+            tc._adb, tc._ui_dump = orig_adb, orig_dump
+        self.assertTrue(handled)
+        self.assertIn((56, 970), taps)      # ticked "do not show again"
+        self.assertEqual(taps[-1], (360, 1184))  # Continue tapped last
+
+    def test_dismiss_noop_when_absent(self):
+        orig_adb, orig_dump = tc._adb, tc._ui_dump
+        tc._adb = lambda *a, **k: ""
+        tc._ui_dump = lambda: UI_XML
+        try:
+            self.assertFalse(tc._dismiss_caution_dialog(max_wait=0))
+        finally:
+            tc._adb, tc._ui_dump = orig_adb, orig_dump
+
+
 class NotificationResult(unittest.TestCase):
     def setUp(self):
         self._orig_adb = tc._adb

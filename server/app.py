@@ -9,8 +9,9 @@ Run behind HTTPS (point the TextGrid number's smsUrl at PUBLIC_URL); expose via 
 
 TIMING: tapping the app takes 15-30s, which is longer than TextGrid's inbound-webhook
 timeout, so a synchronous TwiML reply gets discarded. Instead we answer the webhook
-INSTANTLY with a short TwiML ack, run the slow work in a background thread, and send the
-real result as a SEPARATE outbound SMS via the TextGrid send API (Twilio-compatible).
+INSTANTLY with an EMPTY reply (no up-front ack), run the slow work in a background thread,
+and send the ONE real result as a SEPARATE outbound SMS via the TextGrid send API
+(Twilio-compatible). HELP, the confirmation prompt, and errors are instant, so they reply inline.
 
 Env (see .env.example):
   TEXTGRID_WEBHOOK_SECRET — the number's Webhook Secret, to validate inbound signatures
@@ -169,11 +170,12 @@ async def sms(request: Request):
     if command == "help":
         return _twiml(tc.HELP_TEXT)
 
-    # STATUS and car commands take 15-30s (longer than TextGrid's webhook timeout), so ack NOW and
-    # deliver the real result as a separate outbound SMS from the background worker.
+    # STATUS and car commands take 15-30s (longer than TextGrid's webhook timeout), so the webhook
+    # returns an EMPTY reply (no up-front ack) and the background worker delivers the one real result
+    # as a separate outbound SMS.
     if command == "status":
         _run_bg(_do_status, sender)
-        return _twiml("Checking the car — status coming right back.")
+        return _empty_twiml()
 
     # confirmation gate for car-opening actions (instant reply)
     pretty = command.replace("_", " ")
@@ -187,4 +189,4 @@ async def sms(request: Request):
     _last_cmd_at[sender] = now
 
     _run_bg(_do_command, sender, command)
-    return _twiml(f"Sending '{pretty}' to the car — I'll confirm in a few seconds.")
+    return _empty_twiml()
