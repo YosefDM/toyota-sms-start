@@ -187,24 +187,35 @@ The app's authoritative success/failure signal is a **push notification** from T
 - Alert the operator (SMS/email) if the emulator/Frida/app is down or stuck at login.
 - Health check: periodically confirm the app is on the dashboard and the Frida session is attached.
 
-## Durability automation (built — `scripts/`)
+## Durability automation (built + VERIFIED on the GCP rig — `scripts/`)
 
-- **On-device: Magisk boot module** (`scripts/device/magisk-module/`, install via `scripts/device/install-module.sh`).
-  Its `service.sh` runs late_start as root every boot and re-applies: `setenforce 0`, captive-portal off,
-  content-filter CA trust (`install_ca.sh`, tmpfs + rbind into zygote namespaces), `svc power stayon true`,
-  and starts `frida-server`. Install once (`install-module.sh <ca.0> <frida-server>`), then it's automatic.
-- **Host: supervisor** (`scripts/host/supervisor.sh`). Kills stale emulator/locks → boots the emulator
-  (software GPU) → waits for boot → unlocks with the PIN → waits for `frida-server` → spawn-gates the app
-  under a **persistent** frida session (`tail -f /dev/null | frida …`) and **re-spawns if it drops**.
-  Run it from a systemd unit / Windows Task Scheduler at login so the whole rig comes up unattended.
+On the **GCP Linux VM** (the production box), the whole rig comes up on reboot with **zero manual steps**,
+verified by a full `sudo reboot`:
+
+- **On-device: Magisk boot module `toyotafrida`** starts `frida-server` at boot. **This is essential, and
+  the reason is the 2026-10-06 outage root cause:** plain `su` on this Magisk/Android-15 build grants root
+  with **`CapEff=0` (zero Linux capabilities)**, so a su-started frida-server **cannot load the SELinux
+  policy it needs to spawn-inject** (it logs *"Unable to save SELinux policy to the kernel: Permission
+  denied"* and every spawn fails with `InvocationTargetException`). A Magisk boot module runs in magiskd's
+  **full-capability** context, so frida-server launched that way gets `CapEff=000001ffffffffff` and spawn
+  works. Install via the DAEMON (capless su can't write `/data/adb`): a minimal module zip (module.prop +
+  `service.sh` that does `setenforce 0; nohup /data/local/tmp/frida-server -D &`) + the standard
+  `META-INF/.../update-binary`, then `su -c 'magisk --install-module <zip>'`. (NB: Magisk **Direct Install**
+  from the app does NOT persist on this emulator — root lives in the AVD ramdisk, not the boot image.)
+- **Host: Linux supervisor `scripts/host/rig-supervisor.sh`**, run as the enabled systemd service
+  **`toyota-rig`** (`User=Yosef`, `Restart=always`). Starts Xvfb :99 → boots the headless emulator (software
+  GPU, 4 cores) → waits for boot → unlocks the keyguard (PIN) → waits for the module's frida-server →
+  spawn-gates the app under `toyota_bypass.js`, pinned, with re-spawn. (`supervisor.sh` is the older
+  Windows/dev-machine equivalent.)
+- **`toyota-sms` (webhook) + `cloudflared` (tunnel)** are also systemd-enabled, so they return on boot too.
 
 ### Durability checklist
 
-- [x] Magisk `service.sh` module (setenforce / captive-portal / CA / stay-awake / frida-server)
-- [x] Host supervisor: boot emulator, keep Frida persistently attached, re-spawn on drop
+- [x] Magisk boot module `toyotafrida` starts frida-server with **full caps** (the capless-su fix)
+- [x] Linux supervisor `rig-supervisor.sh` / `toyota-rig` service: boot emulator, unlock, spawn-gate + re-spawn
 - [x] Auto-unlock keyguard on boot (PIN via `input`; digit-tap fallback noted if `input text` is ignored)
-- [ ] Validate with one real reboot (also the clean moment to confirm FCM notifications light up)
-- [ ] Per-command tap: harden panel navigation + find-by-resource-id (from docs/UI-MAP.md); non-blocking "Sending" is fine
-- [ ] TextGrid webhook live test (server/ built; needs a number + public HTTPS URL)
+- [x] **Validated with a real VM reboot — whole rig up untended** (app at Remote dashboard, frida CapEff full, /health device_online, tunnel up)
+- [x] Per-command tap: resource-id + guard, **scrolls to reveal the Remote panel** / opens the ⋯ modal (server/toyota_control.py)
+- [x] TextGrid webhook live-tested: `TOYOTA LOCK` → car locked → real FCM reply
 - [ ] OTP re-auth path (detect LoginActivity → SMS-alert → OTP relay); tick "Keep me signed in"
 - [ ] Watchdog + operator alerting (use /health + notification-shade reads)
