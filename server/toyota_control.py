@@ -178,6 +178,15 @@ def _find_desc(nodes: list[dict], desc: str) -> tuple[int, int] | None:
     return None
 
 
+def _find_text(nodes: list[dict], text: str, contains: bool = False) -> tuple[int, int] | None:
+    for n in nodes:
+        if n["center"] is None:
+            continue
+        if (text in n["text"]) if contains else (n["text"] == text):
+            return n["center"]
+    return None
+
+
 def _screen_size() -> tuple[int, int]:
     try:
         m = re.search(r"(\d+)x(\d+)", _adb("shell", "wm", "size", timeout=8))
@@ -195,6 +204,57 @@ def _scroll_up() -> None:
     x = w // 2
     _adb("shell", "input", "swipe", str(x), str(int(h * 0.72)), str(x), str(int(h * 0.33)), "400")
     time.sleep(1.5)
+
+
+# --------------------------------------------------------------------------- caution dialog
+
+# Remote start (and remote climate) raises a one-time "Caution" safety bottom-sheet that must be
+# CONFIRMED before the command is actually sent to the car — until confirmed, the long-press opens
+# this modal and sends nothing, which silently swallowed START (the modal then blocked every later
+# command too). Unlike the rest of the UI this sheet carries NO resource-ids, so it's matched by its
+# visible text. We tick "Do not show this message again" so it stops reappearing, then tap Continue.
+_CAUTION_CHECKBOX_DESC = "Do not show this message again"
+_CAUTION_CHECKBOX_LABEL = "Don't tell me again."
+
+
+def _caution_present(nodes: list[dict]) -> bool:
+    """The remote-start Caution sheet is up: its title/warning text AND a Continue button are shown."""
+    has_continue = _find_text(nodes, "Continue") is not None
+    has_caution = any(
+        ("Caution" in n["text"]) or ("safe, ventilated" in n["text"]) for n in nodes
+    )
+    return has_continue and has_caution
+
+
+def _dismiss_caution_dialog(max_wait: float = 6.0) -> bool:
+    """If the remote-start Caution sheet appears, tick 'do not show again' and tap Continue to proceed.
+
+    Returns True if a dialog was handled. `max_wait` lets START wait for the sheet to animate in; other
+    commands pass 0 for a single cheap check (they never raise it, but we stay defensive). Matched by
+    text because the sheet has no resource-ids.
+    """
+    deadline = time.time() + max_wait
+    nodes = _nodes(_ui_dump())
+    while not _caution_present(nodes) and time.time() < deadline:
+        time.sleep(1.0)
+        nodes = _nodes(_ui_dump())
+    if not _caution_present(nodes):
+        return False
+
+    # Tick "Do not show this message again" so the sheet stops appearing (best-effort — the command
+    # still goes through via Continue even if this specific tap misses; the code re-handles it anyway).
+    box = _find_desc(nodes, _CAUTION_CHECKBOX_DESC) or _find_text(nodes, _CAUTION_CHECKBOX_LABEL)
+    if box:
+        _adb("shell", "input", "tap", str(box[0]), str(box[1]))
+        time.sleep(1.0)
+
+    # Tap Continue to actually send the remote-start command.
+    nodes = _nodes(_ui_dump())
+    cont = _find_text(nodes, "Continue")
+    if cont:
+        _adb("shell", "input", "tap", str(cont[0]), str(cont[1]))
+        time.sleep(2.0)
+    return True
 
 
 # --------------------------------------------------------------------------- navigation guard
@@ -289,6 +349,12 @@ def execute(command: str) -> int:
     # tap-and-hold to activate
     _adb("shell", "input", "swipe", str(x), str(y), str(x), str(y), str(HOLD_MS),
          timeout=max(20, HOLD_MS // 1000 + 15))
+
+    # Remote start (and climate) interposes a "Caution" safety sheet that must be confirmed before the
+    # request is sent — handle it (tick "don't show again" + Continue). START waits for it to appear;
+    # other commands never raise it, so they just do one cheap check as a safety net.
+    _dismiss_caution_dialog(max_wait=6.0 if command == "start" else 0.0)
+
     # The UI may sit on "Sending…" even after the command fires; the car (and its push notification)
     # is the source of truth. We do NOT block on the spinner.
     return since_ms
