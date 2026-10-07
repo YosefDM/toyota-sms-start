@@ -241,6 +241,56 @@ class CautionDialog(unittest.TestCase):
             tc._adb, tc._ui_dump = orig_adb, orig_dump
 
 
+class PanelRetry(unittest.TestCase):
+    """The whole Advanced Remote navigation retries with a settle-wait, so a command that lands while
+    the app is mid-transition (right after START) recovers instead of failing to the user."""
+
+    def setUp(self):
+        self._orig = (tc._try_reach_advanced_remote, tc._PANEL_RETRY_WAIT, tc._PANEL_ATTEMPTS, tc._ui_dump)
+        tc._PANEL_RETRY_WAIT = 0  # no real waiting in tests
+
+    def tearDown(self):
+        (tc._try_reach_advanced_remote, tc._PANEL_RETRY_WAIT,
+         tc._PANEL_ATTEMPTS, tc._ui_dump) = self._orig
+
+    def test_recovers_on_a_later_attempt(self):
+        good = tc._nodes(UI_XML)
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            return good if calls["n"] >= 2 else None  # first pass fails, second succeeds
+
+        tc._try_reach_advanced_remote = flaky
+        tc._PANEL_ATTEMPTS = 3
+        nodes = tc.ensure_on_advanced_remote()
+        self.assertEqual(calls["n"], 2)
+        self.assertTrue(tc.ANCHOR_IDS <= tc._present_ids(nodes))
+
+    def test_raises_only_after_all_attempts(self):
+        calls = {"n": 0}
+
+        def always_fail():
+            calls["n"] += 1
+            return None
+
+        tc._try_reach_advanced_remote = always_fail
+        tc._PANEL_ATTEMPTS = 3
+        tc._ui_dump = lambda: "<hierarchy></hierarchy>"
+        with self.assertRaises(tc.UINavigationError):
+            tc.ensure_on_advanced_remote()
+        self.assertEqual(calls["n"], 3)  # exhausted every attempt before giving up
+
+    def test_not_logged_in_propagates_immediately(self):
+        def signed_out():
+            raise tc.NotLoggedIn("signed out")
+
+        tc._try_reach_advanced_remote = signed_out
+        tc._PANEL_ATTEMPTS = 3
+        with self.assertRaises(tc.NotLoggedIn):
+            tc.ensure_on_advanced_remote()  # must NOT be retried/swallowed
+
+
 class NotificationResult(unittest.TestCase):
     def setUp(self):
         self._orig_adb = tc._adb
