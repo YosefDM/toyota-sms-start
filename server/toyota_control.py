@@ -293,12 +293,13 @@ def _ensure_dashboard() -> list[dict]:
     return nodes
 
 
-def ensure_on_advanced_remote() -> list[dict]:
-    """Bring up and verify the Advanced Remote panel. Returns the live node list on success.
+def _try_reach_advanced_remote() -> list[dict] | None:
+    """One full pass to bring up + confirm the Advanced Remote panel. Returns the node list on success,
+    or None if the anchor set couldn't be confirmed this pass (the caller may wait and retry). Raises
+    NotLoggedIn immediately if the app is on a sign-in screen.
 
-    Steps: confirm we're in the app and not signed out → if the full 9-button panel is already up,
-    done → else select the Remote tab, then tap the ⋯ "More Horizontal" entry → re-verify the anchor
-    set. Refuses (raises) rather than tapping if the panel can't be confirmed.
+    Steps: confirm we're in the app and not signed out → if the full 9-button panel is already up, done
+    → else select the Remote tab, then tap the ⋯ "More Horizontal" entry → re-verify the anchor set.
     """
     activity = _foreground_activity()
     _assert_logged_in(activity)
@@ -335,11 +336,35 @@ def ensure_on_advanced_remote() -> list[dict]:
         nodes = _nodes(_ui_dump())
         if ANCHOR_IDS <= _present_ids(nodes):
             return nodes
+    return None
 
-    missing = ANCHOR_IDS - _present_ids(nodes)
+
+# A command issued right after START lands while the app is still animating through the remote-start
+# flow (Caution sheet → "Sending…" → climate), so the first navigation pass can miss the panel. We
+# retry the WHOLE navigation a few times with a short settle-wait instead of erroring — the panel
+# reliably reappears within a few seconds. (A single pass is what produced the 2026-10-07 "Couldn't
+# send unlock: Advanced Remote panel not confirmed" SMS even though the panel was fine moments later.)
+_PANEL_ATTEMPTS = int(os.environ.get("PANEL_ATTEMPTS", "3"))
+_PANEL_RETRY_WAIT = float(os.environ.get("PANEL_RETRY_WAIT", "4"))
+
+
+def ensure_on_advanced_remote() -> list[dict]:
+    """Bring up and verify the Advanced Remote panel, retrying the whole navigation with a settle-wait
+    so a command landing mid-transition (e.g. right after START) recovers instead of failing. Returns
+    the live node list on success; raises UINavigationError only after every attempt fails, or
+    NotLoggedIn immediately if the app is signed out.
+    """
+    for attempt in range(_PANEL_ATTEMPTS):
+        reached = _try_reach_advanced_remote()
+        if reached is not None:
+            return reached
+        if attempt < _PANEL_ATTEMPTS - 1:
+            time.sleep(_PANEL_RETRY_WAIT)  # let a transient post-command transition settle, then retry
+
+    missing = ANCHOR_IDS - _present_ids(_nodes(_ui_dump()))
     raise UINavigationError(
-        "Advanced Remote panel not confirmed (missing: " + ", ".join(sorted(missing)) +
-        "). Possible login expiry, a dialog, or a UI change — refusing to tap."
+        f"Advanced Remote panel not confirmed after {_PANEL_ATTEMPTS} attempts (missing: " +
+        ", ".join(sorted(missing)) + "). Possible login expiry, a dialog, or a UI change — refusing to tap."
     )
 
 
