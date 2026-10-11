@@ -554,5 +554,77 @@ class AppReportedSuccess(unittest.TestCase):
                                     f"unquoted space-bearing adb arg: {a!r}")
 
 
+class PostTapScreenRead(unittest.TestCase):
+    """A screen read AFTER the tap must never turn a delivered command into an error.
+
+    _ui_dump() now raises when it cannot get a node tree; before this guard that turned an
+    already-sent command into "Couldn't send lock: couldn't read the screen...".
+    """
+
+    def setUp(self):
+        self._adb, self._sleep = tc._adb, tc.time.sleep
+        tc.time.sleep = lambda *_: None
+
+    def tearDown(self):
+        tc._adb, tc.time.sleep = self._adb, self._sleep
+
+    def test_caution_check_failure_does_not_escape_execute(self):
+        calls = {"swiped": False}
+
+        def fake(*args, **kwargs):
+            if args[:2] == ("shell", "input") and "swipe" in args:
+                calls["swiped"] = True
+                return ""
+            if args[:2] == ("shell", "uiautomator"):
+                if calls["swiped"]:
+                    raise tc.ControlError("dump failed")   # post-tap read breaks
+                return ""
+            if args[:2] == ("shell", "cat"):
+                return UI_XML
+            if args[:2] == ("shell", "date"):
+                return "1700000000000"
+            if args[0] == "get-state":
+                return "device"
+            if args[:2] == ("shell", "dumpsys"):
+                return "topResumedActivity ActivityRecord{x com.toyota.oneapp/.Dash}"
+            return ""
+
+        tc._adb = fake
+        tc.execute("lock")           # must NOT raise
+        self.assertTrue(calls["swiped"], "the command should still have been tapped")
+
+
+class PanelRetrySwallowsDumpErrors(unittest.TestCase):
+    """A dump failure mid-navigation is the same transient the settle-wait retry exists for."""
+
+    def setUp(self):
+        self._try, self._sleep = tc._try_reach_advanced_remote, tc.time.sleep
+        tc.time.sleep = lambda *_: None
+
+    def tearDown(self):
+        tc._try_reach_advanced_remote, tc.time.sleep = self._try, self._sleep
+
+    def test_transient_dump_error_is_retried_then_succeeds(self):
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise tc.ControlError("couldn't read the screen after 3 attempts")
+            return tc._nodes(UI_XML)
+
+        tc._try_reach_advanced_remote = flaky
+        self.assertIsNotNone(tc.ensure_on_advanced_remote())
+        self.assertEqual(calls["n"], 2)
+
+    def test_not_logged_in_is_not_retried(self):
+        def signed_out():
+            raise tc.NotLoggedIn("login screen")
+
+        tc._try_reach_advanced_remote = signed_out
+        with self.assertRaises(tc.NotLoggedIn):
+            tc.ensure_on_advanced_remote()
+
+
 if __name__ == "__main__":
     unittest.main()
