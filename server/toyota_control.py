@@ -542,6 +542,44 @@ def _is_other_commands_result(text: str, command: str | None) -> bool:
     return any(cmd != command and pat.search(text) for cmd, pat in _RESULT_CODES.items())
 
 
+# The app logs its OWN outcome for a command the moment Toyota accepts it, as an analytics event
+# ("local#app#remote_lock_success"). That is a LOCAL signal — reading the log is observation, the
+# same kind the screen is — and it does not depend on the FCM push coming back. Only these three
+# commands emit one; the full `remote_*` event vocabulary was read out of the shipped APK's DEX.
+_APP_SUCCESS_EVENTS = {
+    "lock": "remote_lock_success",
+    "unlock": "remote_unlock_success",
+    "start": "remote_start_success",
+}
+
+
+def _logcat_since(since_ms: int) -> str:
+    """Log lines posted at/after `since_ms` (device epoch ms), or "" if they can't be read.
+
+    The timestamp is formatted ON THE DEVICE so it matches logcat's own clock and timezone, and it
+    is quoted because `adb shell` re-splits its arguments on the device.
+    """
+    try:
+        stamp = _adb("shell", "date", "-d", f"@{since_ms // 1000}",
+                     "+%m-%d %H:%M:%S.000", timeout=10).strip()
+        if not stamp:
+            return ""
+        return _adb("shell", "logcat", "-d", "-t", f"'{stamp}'", timeout=30)
+    except Exception:
+        return ""
+
+
+def app_reported_success(command: str, since_ms: int) -> bool:
+    """True when the app itself logged this command as successful since `since_ms`.
+
+    The fallback for when Toyota's push never arrives. On 2026-10-11 the rig's FCM connection went
+    down (GMS stuck retrying) while commands kept working, so every reply became the useless "No
+    confirmation came back within 25s" even though the car had done what it was told.
+    """
+    event = _APP_SUCCESS_EVENTS.get(command)
+    return bool(event) and event in _logcat_since(since_ms)
+
+
 def await_result(since_ms: int, timeout: int | None = None, poll: float = 2.0,
                  command: str | None = None) -> dict | None:
     """Poll the notification shade for a Toyota command-result push posted at/after `since_ms`.

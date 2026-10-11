@@ -225,6 +225,11 @@ def _do_command(to: str, command: str) -> None:
                 result = None
             if result and result.get("text"):
                 reply = result["text"]
+            elif tc.app_reported_success(command, since_ms):
+                # Toyota's push didn't arrive, but the app logged the command as accepted — report
+                # what we actually know rather than an unqualified "no confirmation".
+                reply = (f"{pretty.capitalize()} went through — the Toyota app confirmed it. "
+                         f"(The car's own confirmation message didn't arrive.)")
             else:
                 reply = (f"Sent '{pretty}' to the car. No confirmation came back within "
                          f"{tc.RESULT_TIMEOUT}s — it may still be completing.")
