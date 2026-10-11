@@ -30,6 +30,12 @@ Status:
 - ✅ **Reboot-durable, VERIFIED:** `toyota-rig` systemd service (`scripts/host/rig-supervisor.sh`) +
   `toyotafrida` Magisk module bring the whole rig up untended on a VM reboot (see the reboot section below).
 - ✅ **CI/CD:** tests + Claude PR review + IAP deploy-on-merge (`.github/workflows/`, `docs/CICD.md`).
+- ⚠️ **FCM PUSH IS DOWN ON THE RIG (since 2026-10-11 18:40 UTC).** GMS sits in an `FcmRetry` loop;
+  mtalk.google.com:5228/443 are reachable from both the VM and the emulator, so it is registration,
+  not the network. Commands still work (the app logs `remote_start_success` and the car responds) —
+  only Toyota's confirmation push is missing. `app_reported_success()` reads the app's own outcome
+  event from logcat as a fallback for lock/unlock/start. **Untried fix: restart the emulator** (holds
+  a real risk of needing an OTP re-login, which has no relay yet).
 - ⬜ **NEXT:** OTP re-auth relay (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` → alert + relay
   code); a watchdog (use `/health` + notification-shade); optional quick-button fast path (skip the modal
   for Lock/Unlock/Start).
@@ -79,6 +85,13 @@ never finished loading (software-GPU compositor ate a whole core; host load pegg
 Commands are a **LONG-PRESS** (simulate with `adb shell input swipe X Y X Y 2500`). Prefer tapping by
 **resource-id** (verify before tapping); coords are this-emulator-specific fallbacks. Status text is
 `remote_progress_text` (idle "Tap and hold to activate" → "Sending…").
+
+**The engine tile is a TOGGLE:** while a remote start is running the app replaces
+`remote_engine_start_button` with `remote_engine_stop_button`. The Advanced Remote guard must
+accept EITHER (`_panel_confirmed`) — requiring the Start id outright made every command fail for
+the ~10 minutes a start was running (five live SMS failures, 2026-10-07..11). `SHUTOFF` taps the
+Stop tile; there is deliberately no `STOP` keyword, because the carrier eats it as the opt-out word
+(the same reason `HELP` never reaches the webhook and the command list advertises `?`).
 
 | Command | resource-id | content-desc | center (this build) |
 |---|---|---|---|
