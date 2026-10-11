@@ -475,5 +475,67 @@ class BareConfirmation(unittest.TestCase):
         self.assertFalse(confirmed)
 
 
+class AppReportedSuccess(unittest.TestCase):
+    """The app's own outcome event is the fallback when Toyota's push never arrives.
+
+    On 2026-10-11 the rig's FCM connection went down while commands kept working, turning every
+    reply into "No confirmation came back within 25s".
+    """
+
+    def setUp(self):
+        self._orig = tc._adb
+
+    def tearDown(self):
+        tc._adb = self._orig
+
+    def _adb_returning(self, log):
+        def fake(*args, **kwargs):
+            if args[:2] == ("shell", "date"):
+                return "10-11 22:34:50.000"
+            if args[:2] == ("shell", "logcat"):
+                return log
+            return ""
+        return fake
+
+    def test_detects_the_apps_success_event(self):
+        tc._adb = self._adb_returning(
+            "10-11 22:34:58.591 I Apptentive: [EVENT] Engaged event: local#app#remote_lock_success")
+        self.assertTrue(tc.app_reported_success("lock", 1791757490000))
+
+    def test_absent_event_is_not_success(self):
+        tc._adb = self._adb_returning("10-11 22:34:58.591 I Apptentive: nothing of interest")
+        self.assertFalse(tc.app_reported_success("lock", 1791757490000))
+
+    def test_another_commands_event_is_not_success(self):
+        tc._adb = self._adb_returning("local#app#remote_unlock_success")
+        self.assertFalse(tc.app_reported_success("lock", 1791757490000))
+
+    def test_uncatalogued_command_never_claims_success(self):
+        tc._adb = self._adb_returning("local#app#remote_lock_success")
+        for cmd in ("lights", "horn", "buzzer", "hazards", "shutoff"):
+            self.assertFalse(tc.app_reported_success(cmd, 1791757490000), cmd)
+
+    def test_unreadable_log_is_not_success(self):
+        def boom(*a, **k):
+            raise tc.ControlError("adb died")
+        tc._adb = boom
+        self.assertFalse(tc.app_reported_success("lock", 1791757490000))
+
+    def test_timestamp_is_quoted_for_the_device_shell(self):
+        seen = {}
+
+        def fake(*args, **kwargs):
+            if args[:2] == ("shell", "date"):
+                return "10-11 22:34:50.000"
+            if args[:2] == ("shell", "logcat"):
+                seen["args"] = args
+            return ""
+
+        tc._adb = fake
+        tc.app_reported_success("lock", 1791757490000)
+        # adb shell re-splits its arguments on the device, so the space-bearing stamp must be quoted.
+        self.assertIn("'10-11 22:34:50.000'", seen["args"])
+
+
 if __name__ == "__main__":
     unittest.main()
