@@ -75,24 +75,32 @@ _ui_lock = threading.Lock()
 _ui_busy_since: float | None = None
 
 
-def _claim_ui() -> bool:
-    """Take the exclusive right to drive the app's UI. False if another worker still holds it."""
+def _claim_ui() -> float | None:
+    """Take the exclusive right to drive the app's UI.
+
+    Returns a token to hand back to `_release_ui`, or None if another worker still holds the claim.
+    The token matters: when a claim is STOLEN from a wedged worker, that worker may still finish
+    later, and a token-less release would clear the *new* holder's claim — letting a third command
+    drive the screen alongside it, which is the exact overlap this lock exists to prevent.
+    """
     global _ui_busy_since
     with _ui_lock:
         now = time.time()
         if _ui_busy_since is not None and now - _ui_busy_since < UI_CLAIM_TIMEOUT:
-            return False
+            return None
         if _ui_busy_since is not None:
             logger.warning("stealing a UI claim held %.0fs — previous worker looks wedged",
                            now - _ui_busy_since)
         _ui_busy_since = now
-        return True
+        return now
 
 
-def _release_ui() -> None:
+def _release_ui(token: float | None) -> None:
+    """Release the claim only if `token` is still the live one (see `_claim_ui`)."""
     global _ui_busy_since
     with _ui_lock:
-        _ui_busy_since = None
+        if token is not None and _ui_busy_since == token:
+            _ui_busy_since = None
 
 
 def _twiml(text: str) -> Response:
@@ -131,15 +139,22 @@ def send_sms(to: str, body: str) -> str | None:
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            payload = json.loads(r.read().decode("utf-8", errors="replace") or "{}")
-        sid = payload.get("sid")
-        # Log the BODY, not just the status code: without it, diagnosing which error text the owner
-        # actually received meant going to TextGrid's API, because the journal never recorded it.
-        logger.info("outbound SMS to %s sid=%s: %s", to[-4:], sid, body.replace("\n", " | "))
-        return sid
+            raw = r.read().decode("utf-8", errors="replace")
     except Exception as e:
         logger.error("outbound SMS to %s failed: %r | body=%s", to[-4:], e, body.replace("\n", " | "))
         return None
+    # Parse OUTSIDE the request's try: the send already succeeded, so a surprising body must not be
+    # reported as a failed send — that would also skip the delivery check in `deliver()`.
+    try:
+        sid = (json.loads(raw or "{}") or {}).get("sid")
+    except Exception as e:
+        logger.warning("outbound SMS to %s was accepted but its response didn't parse (%r) — "
+                       "can't verify delivery", to[-4:], e)
+        sid = None
+    # Log the BODY, not just the status code: without it, diagnosing which error text the owner
+    # actually received meant going to TextGrid's API, because the journal never recorded it.
+    logger.info("outbound SMS to %s sid=%s: %s", to[-4:], sid, body.replace("\n", " | "))
+    return sid
 
 
 def _message_status(sid: str) -> tuple[str, str]:
@@ -169,7 +184,11 @@ def deliver(to: str, body: str) -> None:
     sid = send_sms(to, body)
     if not sid:
         return
-    for wait in (6, 10):
+    # The filter verdict often lands well after the message has sat queued/accepted, so keep
+    # looking for ~65s rather than ~16s, and say so loudly if it never reaches a terminal state —
+    # a silently-non-terminal reply is exactly the failure this function was added to catch.
+    status = ""
+    for wait in (6, 10, 20, 30):
         time.sleep(wait)
         status, err = _message_status(sid)
         if status in ("delivered", "sent"):
@@ -178,13 +197,15 @@ def deliver(to: str, body: str) -> None:
             logger.error("reply sid=%s was not delivered (status=%s err=%s) — resending", sid, status, err)
             send_sms(to, f"{body} ({time.strftime('%H:%M')})")
             return
+    logger.warning("reply sid=%s never reached a terminal status (last=%r) — delivery unconfirmed",
+                   sid, status)
 
 
 def _run_bg(fn, *args) -> None:
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
-def _do_status(to: str) -> None:
+def _do_status(to: str, token: float | None = None) -> None:
     try:
         reply = tc.format_status(tc.read_status())
     except tc.NotLoggedIn:
@@ -195,11 +216,11 @@ def _do_status(to: str) -> None:
         logger.exception("status failed")
         reply = f"Status failed: {e}"
     finally:
-        _release_ui()
+        _release_ui(token)
     deliver(to, reply)
 
 
-def _do_command(to: str, command: str) -> None:
+def _do_command(to: str, command: str, token: float | None = None) -> None:
     """Drive the car, then report. Works out the whole reply BEFORE releasing the UI claim, and
     only sends afterwards — `deliver` spends up to ~16s confirming the SMS went out, which must
     not keep the next command waiting on the screen."""
@@ -226,15 +247,16 @@ def _do_command(to: str, command: str) -> None:
             if result and result.get("text"):
                 reply = result["text"]
             elif tc.app_reported_success(command, since_ms):
-                # Toyota's push didn't arrive, but the app logged the command as accepted — report
-                # what we actually know rather than an unqualified "no confirmation".
-                reply = (f"{pretty.capitalize()} went through — the Toyota app confirmed it. "
-                         f"(The car's own confirmation message didn't arrive.)")
+                # The app's event means TOYOTA ACCEPTED the request, not that the car acted — a
+                # car-side refusal ("keyfob was detected [70]") only ever arrives on the push that
+                # is, by definition, missing here. Don't promise more than acceptance.
+                reply = (f"{pretty.capitalize()} was accepted by the Toyota app, but the car's own "
+                         f"confirmation didn't arrive — I can't confirm the car actually did it.")
             else:
                 reply = (f"Sent '{pretty}' to the car. No confirmation came back within "
                          f"{tc.RESULT_TIMEOUT}s — it may still be completing.")
     finally:
-        _release_ui()
+        _release_ui(token)
     deliver(to, reply)
 
 
@@ -276,10 +298,14 @@ async def sms(request: Request):
     # A bare "YES" (nothing left after stripping the confirmation word) answers the last
     # confirmation prompt, so the owner doesn't have to retype "TOYOTA UNLOCK YES" on a keypad.
     if not command and confirmed:
-        pending = _pending_confirm.pop(sender, None)
+        # Peek, don't pop: the request can still bounce off the rate limit or the UI claim below,
+        # and consuming the confirmation there would make the owner's next YES answer "nothing is
+        # waiting" — on a keypad phone that is a trap. It is cleared once the command dispatches.
+        pending = _pending_confirm.get(sender)
         if pending and time.time() - pending[1] <= CONFIRM_WINDOW_SECONDS:
             command = pending[0]
         else:
+            _pending_confirm.pop(sender, None)
             return _twiml("Nothing is waiting for confirmation. Send the command first, e.g. 'TOYOTA UNLOCK'.")
 
     if not command:
@@ -294,9 +320,10 @@ async def sms(request: Request):
     # returns an EMPTY reply (no up-front ack) and the background worker delivers the one real result
     # as a separate outbound SMS.
     if command == "status":
-        if not _claim_ui():
+        token = _claim_ui()
+        if token is None:
             return _twiml("One moment — still working on your last command.")
-        _run_bg(_do_status, sender)
+        _run_bg(_do_status, sender, token)
         return _empty_twiml()
 
     # confirmation gate for car-opening actions (instant reply)
@@ -311,9 +338,15 @@ async def sms(request: Request):
         return _twiml("One moment — still processing your last command.")
 
     # one car, one screen: never drive the UI from two workers at once
-    if not _claim_ui():
+    token = _claim_ui()
+    if token is None:
         return _twiml("One moment — still working on your last command.")
     _last_cmd_at[sender] = now
 
-    _run_bg(_do_command, sender, command)
+    # The command is going out now, so retire any pending confirmation — including one left by a
+    # DIFFERENT command the owner then abandoned. Otherwise a stray later YES could still fire that
+    # abandoned car-opening action (e.g. TRUNK) without a fresh prompt.
+    _pending_confirm.pop(sender, None)
+
+    _run_bg(_do_command, sender, command, token)
     return _empty_twiml()

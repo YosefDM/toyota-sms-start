@@ -13,10 +13,13 @@ from the notification shade (`dumpsys notification --noredact`). The on-screen "
 an unreliable success signal and is NOT used to decide success.
 """
 from __future__ import annotations
+import logging
 import os
 import re
 import subprocess
 import time
+
+logger = logging.getLogger("toyota_control")
 
 ADB = os.environ.get("ADB_PATH", "adb")
 SERIAL = os.environ.get("ADB_SERIAL", "emulator-5554")
@@ -405,13 +408,25 @@ def ensure_on_advanced_remote() -> list[dict]:
     NotLoggedIn immediately if the app is signed out.
     """
     for attempt in range(_PANEL_ATTEMPTS):
-        reached = _try_reach_advanced_remote()
+        try:
+            reached = _try_reach_advanced_remote()
+        except NotLoggedIn:
+            raise  # a sign-out is not transient — surface it immediately
+        except ControlError:
+            # A dump fails for the SAME reason this retry loop exists (mid-animation / busy device),
+            # so let it fall through to the settle-wait instead of escaping as a hard error.
+            reached = None
         if reached is not None:
             return reached
         if attempt < _PANEL_ATTEMPTS - 1:
             time.sleep(_PANEL_RETRY_WAIT)  # let a transient post-command transition settle, then retry
 
-    present = _present_ids(_nodes(_ui_dump()))
+    try:
+        present = _present_ids(_nodes(_ui_dump()))
+    except ControlError as e:
+        raise UINavigationError(
+            f"Couldn't read the screen after {_PANEL_ATTEMPTS} attempts ({e}) — refusing to tap."
+        ) from e
     missing = sorted(ANCHOR_IDS - present)
     if not (ENGINE_ANCHOR_IDS & present):
         missing.append("an engine button (start or stop)")
@@ -456,9 +471,19 @@ def execute(command: str) -> int:
                 "about 10 minutes after it started. Reply SHUTOFF to stop it now."
             )
         if command == "shutoff" and ENGINE_START_ID in present:
-            raise CommandNotApplicable(
-                "The engine isn't running from a remote start, so there's nothing to shut off."
-            )
+            # The tile only flips once the app refreshes remote status, so a Start tile is NOT proof
+            # the engine is off — right after a START it still reads Start for a while. Re-check
+            # after a settle, and if it still shows Start, report what we can SEE rather than
+            # asserting the car's state and leaving a running engine with no way to stop it.
+            time.sleep(5)
+            nodes = ensure_on_advanced_remote()
+            target = _find(nodes, rid, label)
+            if target is None:
+                raise CommandNotApplicable(
+                    "I can't see a Stop button on the Remote panel, so I haven't shut anything off. "
+                    "If you just started the engine, give it a few seconds and send SHUTOFF again; "
+                    "a remote start also stops on its own about 10 minutes in."
+                )
         raise UINavigationError(
             f"control for '{command}' (id={rid}" + (f", label={label!r}" if label else "") +
             ") not found on the panel — refusing to tap."
@@ -472,7 +497,14 @@ def execute(command: str) -> int:
     # Remote start (and climate) interposes a "Caution" safety sheet that must be confirmed before the
     # request is sent — handle it (tick "don't show again" + Continue). START waits for it to appear;
     # other commands never raise it, so they just do one cheap check as a safety net.
-    _dismiss_caution_dialog(max_wait=6.0 if command == "start" else 0.0)
+    # The command has ALREADY been sent at this point, so a failure to read the screen must not
+    # become the owner's answer: `_ui_dump` now raises when it can't get a node tree, and before
+    # this guard that turned a delivered command into "Couldn't send lock: couldn't read the
+    # screen". Non-start commands never raise the Caution sheet anyway.
+    try:
+        _dismiss_caution_dialog(max_wait=6.0 if command == "start" else 0.0)
+    except ControlError as e:
+        logger.warning("couldn't re-read the screen after the tap (the command was already sent): %s", e)
 
     # The UI may sit on "Sending…" even after the command fires; the car (and its push notification)
     # is the source of truth. We do NOT block on the spinner.
@@ -600,6 +632,11 @@ def await_result(since_ms: int, timeout: int | None = None, poll: float = 2.0,
             if r["when"] < since_ms - skew:
                 continue
             if _is_other_commands_result(r.get("text", ""), command):
+                # Log it: if a command whose code we haven't catalogued (shutoff, the trunk pair)
+                # ever reuses a known family, this is the only way the mismatch becomes visible
+                # instead of silently becoming "no confirmation came back".
+                logger.info("ignoring a push carrying another command's code while waiting "
+                            "for %r: %s", command, r.get("text", "")[:90])
                 continue
             if best is None or r["when"] > best["when"]:
                 best = r
