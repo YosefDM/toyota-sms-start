@@ -556,12 +556,14 @@ _APP_SUCCESS_EVENTS = {
 def _logcat_since(since_ms: int) -> str:
     """Log lines posted at/after `since_ms` (device epoch ms), or "" if they can't be read.
 
-    The timestamp is formatted ON THE DEVICE so it matches logcat's own clock and timezone, and it
-    is quoted because `adb shell` re-splits its arguments on the device.
+    The timestamp is formatted ON THE DEVICE so it matches logcat's own clock and timezone.
+    EVERY argument containing a space must be quoted: `adb shell` joins its arguments into one
+    command string and the device's shell re-splits it, so an unquoted "+%m-%d %H:%M:%S.000"
+    arrives as two arguments and toybox answers `date: Max 1 argument`.
     """
     try:
         stamp = _adb("shell", "date", "-d", f"@{since_ms // 1000}",
-                     "+%m-%d %H:%M:%S.000", timeout=10).strip()
+                     "'+%m-%d %H:%M:%S.000'", timeout=10).strip()
         if not stamp:
             return ""
         return _adb("shell", "logcat", "-d", "-t", f"'{stamp}'", timeout=30)
