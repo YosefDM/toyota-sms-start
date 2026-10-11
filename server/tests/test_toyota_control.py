@@ -28,6 +28,14 @@ UI_XML = """<?xml version='1.0'?><hierarchy>
 <node resource-id="android:id/content" content-desc="More Horizontal" bounds="[880,910][924,948]"/>
 </hierarchy>"""
 
+# The same panel while a remote start is running: the Start tile is REPLACED by a Stop tile. This is
+# the state that used to make every command fail for ~10 minutes after a START.
+UI_XML_ENGINE_RUNNING = UI_XML.replace(
+    '<node resource-id="com.toyota.oneapp:id/remote_engine_start_button" text="Start" content-desc="Start" bounds="[100,600][300,700]"/>',
+    '<node resource-id="com.toyota.oneapp:id/remote_engine_stop_button" text="Stop" content-desc="Stop" bounds="[100,600][300,700]"/>',
+)
+assert "remote_engine_stop_button" in UI_XML_ENGINE_RUNNING
+
 DUMP = """NotificationManagerService state:
 NotificationRecord(0x1a: pkg=com.google.android.gms user=0 key=0|com.google.android.gms|1|null|10100)
       mWhen=1696500000000
@@ -181,8 +189,79 @@ class UIParsing(unittest.TestCase):
         self.assertEqual(tc._find_desc(self.nodes, "More Horizontal"), (902, 929))
 
     def test_every_command_id_resolves(self):
+        # 'shutoff' is deliberately absent while the engine is off — it's the same tile as 'start'.
         for cmd, (rid, label) in tc.COMMAND_IDS.items():
+            if cmd == "shutoff":
+                continue
             self.assertIsNotNone(tc._find(self.nodes, rid, label), f"{cmd} not found")
+
+    def test_shutoff_resolves_only_while_the_engine_runs(self):
+        running = tc._nodes(UI_XML_ENGINE_RUNNING)
+        self.assertIsNotNone(tc._find(running, tc.ENGINE_STOP_ID))
+        self.assertIsNone(tc._find(running, tc.ENGINE_START_ID))
+        self.assertIsNone(tc._find(self.nodes, tc.ENGINE_STOP_ID))
+
+
+class PanelConfirmation(unittest.TestCase):
+    """The Advanced Remote guard must accept EITHER engine button.
+
+    Requiring `remote_engine_start_button` outright made every command fail for the ~10 minutes a
+    remote start was running (5 live SMS failures, 2026-10-07..11) with
+    "Advanced Remote panel not confirmed ... (missing: remote_engine_start_button)".
+    """
+
+    def test_panel_confirmed_with_start_button(self):
+        ids = tc._present_ids(tc._nodes(UI_XML))
+        self.assertTrue(tc._panel_confirmed(ids))
+
+    def test_panel_confirmed_with_stop_button(self):
+        ids = tc._present_ids(tc._nodes(UI_XML_ENGINE_RUNNING))
+        self.assertTrue(tc._panel_confirmed(ids))
+
+    def test_panel_rejected_without_any_engine_button(self):
+        ids = tc._present_ids(tc._nodes(UI_XML)) - {tc.ENGINE_START_ID}
+        self.assertFalse(tc._panel_confirmed(ids))
+
+    def test_panel_rejected_when_a_fixed_anchor_is_missing(self):
+        ids = tc._present_ids(tc._nodes(UI_XML)) - {"remote_horn_button"}
+        self.assertFalse(tc._panel_confirmed(ids))
+
+    def test_start_button_is_not_a_fixed_anchor(self):
+        self.assertNotIn(tc.ENGINE_START_ID, tc.ANCHOR_IDS)
+        self.assertEqual(tc.ENGINE_ANCHOR_IDS, {tc.ENGINE_START_ID, tc.ENGINE_STOP_ID})
+
+
+class ResultScoping(unittest.TestCase):
+    """A push carrying another command's result code must not be reported as this command's result.
+
+    On 2026-10-08 a START was answered "The vehicle is now locked. [DL1]" — the previous LOCK's
+    push, matched on timestamp alone.
+    """
+
+    def test_rejects_another_commands_code(self):
+        self.assertTrue(tc._is_other_commands_result("The vehicle is now locked. [DL1]", "start"))
+        self.assertTrue(tc._is_other_commands_result("The vehicle is now unlocked. [DL0]", "lock"))
+
+    def test_accepts_its_own_code(self):
+        self.assertFalse(tc._is_other_commands_result(
+            "Vehicle was started and will automatically shut off in 10 minutes. [RES1]", "start"))
+        self.assertFalse(tc._is_other_commands_result("The vehicle is now locked. [DL1]", "lock"))
+
+    def test_accepts_shared_failure_pushes(self):
+        # A failure push carries no per-command code and IS the answer to whatever we sent.
+        for text in ("Remote command failed. Please ensure the vehicle is not in use [D1]",
+                     "Your request could not be completed because a keyfob was detected. [70]"):
+            for cmd in ("start", "lock", "lights", "shutoff"):
+                self.assertFalse(tc._is_other_commands_result(text, cmd), f"{cmd}: {text}")
+
+    def test_accepts_anything_for_an_uncatalogued_command(self):
+        # LIGHTS has no known code; an unrecognised push is still its legitimate result...
+        self.assertFalse(tc._is_other_commands_result("The lights were flashed. [LT1]", "lights"))
+        # ...but a LOCK confirmation plainly is not.
+        self.assertTrue(tc._is_other_commands_result("The vehicle is now locked. [DL1]", "lights"))
+
+    def test_no_command_means_no_filtering(self):
+        self.assertFalse(tc._is_other_commands_result("The vehicle is now locked. [DL1]", None))
 
 
 CAUTION_XML = """<?xml version='1.0'?><hierarchy>
@@ -315,6 +394,85 @@ class NotificationResult(unittest.TestCase):
     def test_rejects_stale_older_notification(self):
         # A command issued later than any existing notification must not match an old one.
         self.assertIsNone(tc.await_result(since_ms=1696700000000, timeout=0, poll=0))
+
+
+
+
+class DumpRetry(unittest.TestCase):
+    """A transient `uiautomator dump` failure must not become the owner's answer.
+
+    It produced the 2026-10-09 SMS "Couldn't send lights: adb shell uiautomator dump
+    /sdcard/ui.xml failed:" — note the empty reason.
+    """
+
+    def setUp(self):
+        self._orig_adb, self._orig_sleep = tc._adb, tc.time.sleep
+        tc.time.sleep = lambda *_: None
+
+    def tearDown(self):
+        tc._adb, tc.time.sleep = self._orig_adb, self._orig_sleep
+
+    def test_retries_then_succeeds(self):
+        calls = []
+
+        def fake_adb(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("shell", "uiautomator") and len(calls) <= 2:
+                raise tc.ControlError("adb shell uiautomator dump /sdcard/ui.xml failed: ")
+            return UI_XML if args[:2] == ("shell", "cat") else ""
+
+        tc._adb = fake_adb
+        self.assertIn("<node", tc._ui_dump())
+
+    def test_gives_up_with_a_reason_not_an_empty_message(self):
+        def always_fails(*args, **kwargs):
+            raise tc.ControlError("adb shell uiautomator dump /sdcard/ui.xml failed: ")
+
+        tc._adb = always_fails
+        with self.assertRaises(tc.ControlError) as ctx:
+            tc._ui_dump()
+        self.assertIn("couldn't read the screen", str(ctx.exception))
+
+    def test_empty_dump_is_a_failure(self):
+        tc._adb = lambda *a, **k: "" if a[:2] == ("shell", "cat") else ""
+        with self.assertRaises(tc.ControlError):
+            tc._ui_dump()
+
+
+class ShutoffKeyword(unittest.TestCase):
+    def test_shutoff_aliases(self):
+        for text in ("SHUTOFF", "toyota shut off", "ENGINE OFF", "Toyota kill engine"):
+            self.assertEqual(tc.parse_command(text)[0], "shutoff", text)
+
+    def test_stop_is_never_an_engine_command(self):
+        # The carrier intercepts STOP as the opt-out keyword; it must never mean "stop the engine".
+        self.assertNotEqual(tc.parse_command("STOP")[0], "shutoff")
+
+    def test_help_text_advertises_the_question_mark(self):
+        # HELP never reaches the webhook (carrier intercept), so the list must not tell them to use it.
+        self.assertIn("?", tc.HELP_TEXT)
+        self.assertNotIn("HELP - this list", tc.HELP_TEXT)
+
+
+class BareConfirmation(unittest.TestCase):
+    """A bare "YES" must be recognisable as a confirmation with no command of its own, so the
+    webhook can apply it to the pending one. A plain "Yes" answered "Unknown command" on
+    2026-10-06 because the owner had to retype "TOYOTA UNLOCK YES" in full."""
+
+    def test_bare_yes_is_a_confirmation_without_a_command(self):
+        for text in ("YES", "yes", "Yes", "toyota yes", "confirm", "really"):
+            cmd, confirmed = tc.parse_command(text)
+            self.assertIsNone(cmd, text)
+            self.assertTrue(confirmed, text)
+
+    def test_a_full_command_still_carries_its_confirmation(self):
+        self.assertEqual(tc.parse_command("TOYOTA UNLOCK YES"), ("unlock", True))
+        self.assertEqual(tc.parse_command("TOYOTA UNLOCK"), ("unlock", False))
+
+    def test_an_unrelated_word_is_not_a_confirmation(self):
+        cmd, confirmed = tc.parse_command("sure")
+        self.assertIsNone(cmd)
+        self.assertFalse(confirmed)
 
 
 if __name__ == "__main__":

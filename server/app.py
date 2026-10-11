@@ -23,6 +23,7 @@ Env (see .env.example):
 """
 from __future__ import annotations
 import base64
+import json
 import logging
 import os
 import threading
@@ -55,8 +56,43 @@ TEXTGRID_AUTH_TOKEN = os.environ.get("TEXTGRID_AUTH_TOKEN", "")
 TEXTGRID_FROM = os.environ.get("TEXTGRID_PHONE_NUMBER", "")
 TEXTGRID_BASE_URL = os.environ.get("TEXTGRID_BASE_URL", "https://api.textgrid.com")
 
+# A command whose confirmation we're waiting on: sender -> (command, asked_at). Lets the owner
+# answer the confirmation prompt with a bare "YES" instead of retyping the whole command — a plain
+# "Yes" used to come back "Unknown command" (2026-10-06), which is a trap on a numeric keypad.
+CONFIRM_WINDOW_SECONDS = int(os.environ.get("CONFIRM_WINDOW_SECONDS", "120"))
+
+# There is ONE car and ONE emulator, so UI work must not overlap: two threads driving the same
+# screen fight over navigation, and the second command's result poll can pick up the first's push.
+# That overlap is what answered a START with "The vehicle is now locked" (2026-10-08) and what let a
+# STATUS read collide with a command (2026-10-06). The stale-claim timeout keeps a wedged worker
+# from locking the car out for good.
+UI_CLAIM_TIMEOUT = int(os.environ.get("UI_CLAIM_TIMEOUT", "180"))
+
 app = FastAPI(title="Toyota SMS Remote")
 _last_cmd_at: dict[str, float] = {}
+_pending_confirm: dict[str, tuple[str, float]] = {}
+_ui_lock = threading.Lock()
+_ui_busy_since: float | None = None
+
+
+def _claim_ui() -> bool:
+    """Take the exclusive right to drive the app's UI. False if another worker still holds it."""
+    global _ui_busy_since
+    with _ui_lock:
+        now = time.time()
+        if _ui_busy_since is not None and now - _ui_busy_since < UI_CLAIM_TIMEOUT:
+            return False
+        if _ui_busy_since is not None:
+            logger.warning("stealing a UI claim held %.0fs — previous worker looks wedged",
+                           now - _ui_busy_since)
+        _ui_busy_since = now
+        return True
+
+
+def _release_ui() -> None:
+    global _ui_busy_since
+    with _ui_lock:
+        _ui_busy_since = None
 
 
 def _twiml(text: str) -> Response:
@@ -73,23 +109,75 @@ def _empty_twiml() -> Response:
                     media_type="application/xml")
 
 
-def send_sms(to: str, body: str) -> None:
-    """Send an outbound SMS via TextGrid's /2010-04-01 Twilio-compatible endpoint (HTTP Basic)."""
+def _tg_auth_header() -> str:
+    return "Basic " + base64.b64encode(
+        f"{TEXTGRID_ACCOUNT_SID}:{TEXTGRID_AUTH_TOKEN}".encode()).decode()
+
+
+def send_sms(to: str, body: str) -> str | None:
+    """Send an outbound SMS via TextGrid's /2010-04-01 Twilio-compatible endpoint (HTTP Basic).
+
+    Returns the message sid so delivery can be checked, or None if the send itself failed.
+    """
     if not (TEXTGRID_ACCOUNT_SID and TEXTGRID_AUTH_TOKEN and TEXTGRID_FROM):
         logger.error("Outbound SMS not configured (TEXTGRID_ACCOUNT_SID/AUTH_TOKEN/PHONE_NUMBER) — can't deliver: %s", body[:60])
-        return
+        return None
     url = f"{TEXTGRID_BASE_URL}/2010-04-01/Accounts/{TEXTGRID_ACCOUNT_SID}/Messages.json"
     data = urllib.parse.urlencode({"To": to, "From": TEXTGRID_FROM, "Body": body}).encode()
-    auth = base64.b64encode(f"{TEXTGRID_ACCOUNT_SID}:{TEXTGRID_AUTH_TOKEN}".encode()).decode()
     req = urllib.request.Request(
         url, data=data, method="POST",
-        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Authorization": _tg_auth_header(),
+                 "Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            logger.info("outbound SMS to %s: HTTP %s", to[-4:], r.status)
+            payload = json.loads(r.read().decode("utf-8", errors="replace") or "{}")
+        sid = payload.get("sid")
+        # Log the BODY, not just the status code: without it, diagnosing which error text the owner
+        # actually received meant going to TextGrid's API, because the journal never recorded it.
+        logger.info("outbound SMS to %s sid=%s: %s", to[-4:], sid, body.replace("\n", " | "))
+        return sid
     except Exception as e:
-        logger.error("outbound SMS to %s failed: %r", to[-4:], e)
+        logger.error("outbound SMS to %s failed: %r | body=%s", to[-4:], e, body.replace("\n", " | "))
+        return None
+
+
+def _message_status(sid: str) -> tuple[str, str]:
+    """(status, error_message) for a sent message, or ("", "") if it can't be read."""
+    url = (f"{TEXTGRID_BASE_URL}/2010-04-01/Accounts/"
+           f"{urllib.parse.quote(TEXTGRID_ACCOUNT_SID, safe='')}/Messages/"
+           f"{urllib.parse.quote(sid, safe='')}.json")
+    req = urllib.request.Request(url, headers={"Authorization": _tg_auth_header()})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            m = json.loads(r.read().decode("utf-8", errors="replace") or "{}")
+        return (m.get("status") or ""), (m.get("error_message") or "")
+    except Exception as e:
+        logger.warning("couldn't read status of sid=%s: %r", sid, e)
+        return "", ""
+
+
+def deliver(to: str, body: str) -> None:
+    """Send a reply AND make sure it actually went out, resending once if it didn't.
+
+    TextGrid accepts the POST (HTTP 201) and only then runs its content filter, so a blocked reply
+    looked like a success here and vanished silently: on 2026-10-06 two identical "Vehicle was
+    started..." confirmations came back "failed - Blocked by Textgrid Content Filter" and the owner
+    was never told anything. The same wording delivered fine before and after, so the trigger is
+    duplicate content — the resend carries a timestamp to make it unique.
+    """
+    sid = send_sms(to, body)
+    if not sid:
+        return
+    for wait in (6, 10):
+        time.sleep(wait)
+        status, err = _message_status(sid)
+        if status in ("delivered", "sent"):
+            return
+        if status in ("failed", "undelivered"):
+            logger.error("reply sid=%s was not delivered (status=%s err=%s) — resending", sid, status, err)
+            send_sms(to, f"{body} ({time.strftime('%H:%M')})")
+            return
 
 
 def _run_bg(fn, *args) -> None:
@@ -106,28 +194,43 @@ def _do_status(to: str) -> None:
     except Exception as e:  # never let the thread die silently
         logger.exception("status failed")
         reply = f"Status failed: {e}"
-    send_sms(to, reply)
+    finally:
+        _release_ui()
+    deliver(to, reply)
 
 
 def _do_command(to: str, command: str) -> None:
+    """Drive the car, then report. Works out the whole reply BEFORE releasing the UI claim, and
+    only sends afterwards — `deliver` spends up to ~16s confirming the SMS went out, which must
+    not keep the next command waiting on the screen."""
     pretty = command.replace("_", " ")
     try:
-        since_ms = tc.execute(command)
-    except tc.NotLoggedIn:
-        send_sms(to, "The car app is signed out and needs re-authentication before I can send commands. The operator has been alerted.")
-        return
-    except tc.ControlError as e:
-        send_sms(to, f"Couldn't send {pretty}: {e}")
-        return
-    except Exception as e:
-        logger.exception("command failed")
-        send_sms(to, f"{pretty} failed: {e}")
-        return
-    result = tc.await_result(since_ms)
-    if result and result.get("text"):
-        send_sms(to, result["text"])
-    else:
-        send_sms(to, f"Sent '{pretty}' to the car. No confirmation came back within {tc.RESULT_TIMEOUT}s — it may still be completing.")
+        try:
+            since_ms = tc.execute(command)
+        except tc.NotLoggedIn:
+            reply = ("The car app is signed out and needs re-authentication before I can send "
+                     "commands. The operator has been alerted.")
+        except tc.CommandNotApplicable as e:
+            reply = str(e)  # already a complete sentence for the owner
+        except tc.ControlError as e:
+            reply = f"Couldn't send {pretty}: {e}"
+        except Exception as e:
+            logger.exception("command failed")
+            reply = f"{pretty} failed: {e}"
+        else:
+            try:
+                result = tc.await_result(since_ms, command=command)
+            except Exception:
+                logger.exception("reading the result notification failed")
+                result = None
+            if result and result.get("text"):
+                reply = result["text"]
+            else:
+                reply = (f"Sent '{pretty}' to the car. No confirmation came back within "
+                         f"{tc.RESULT_TIMEOUT}s — it may still be completing.")
+    finally:
+        _release_ui()
+    deliver(to, reply)
 
 
 @app.get("/health")
@@ -162,9 +265,21 @@ async def sms(request: Request):
         return _twiml("Sorry, this number isn't authorized.")
 
     # 4) parse the command
+    logger.info("inbound SMS from %s: %s", sender[-4:], body.replace("\n", " | ")[:160])
     command, confirmed = tc.parse_command(body)
+
+    # A bare "YES" (nothing left after stripping the confirmation word) answers the last
+    # confirmation prompt, so the owner doesn't have to retype "TOYOTA UNLOCK YES" on a keypad.
+    if not command and confirmed:
+        pending = _pending_confirm.pop(sender, None)
+        if pending and time.time() - pending[1] <= CONFIRM_WINDOW_SECONDS:
+            command = pending[0]
+        else:
+            return _twiml("Nothing is waiting for confirmation. Send the command first, e.g. 'TOYOTA UNLOCK'.")
+
     if not command:
-        return _twiml("Unknown command. Reply HELP for the list. (STATUS, START, LOCK, UNLOCK, ...)")
+        # NB: tells them "?" — the carrier intercepts HELP, so a HELP text never reaches us at all.
+        return _twiml("Unknown command. Reply ? for the list. (STATUS, START, LOCK, UNLOCK, ...)")
 
     # HELP is instant — reply synchronously.
     if command == "help":
@@ -174,18 +289,25 @@ async def sms(request: Request):
     # returns an EMPTY reply (no up-front ack) and the background worker delivers the one real result
     # as a separate outbound SMS.
     if command == "status":
+        if not _claim_ui():
+            return _twiml("One moment — still working on your last command.")
         _run_bg(_do_status, sender)
         return _empty_twiml()
 
     # confirmation gate for car-opening actions (instant reply)
     pretty = command.replace("_", " ")
     if command in tc.CONFIRM_REQUIRED and not confirmed:
-        return _twiml(f"Reply 'TOYOTA {pretty.upper()} YES' to confirm {pretty}.")
+        _pending_confirm[sender] = (command, time.time())
+        return _twiml(f"Reply YES to confirm {pretty}.")
 
     # per-sender rate limit (instant reply)
     now = time.time()
     if now - _last_cmd_at.get(sender, 0) < RATE_LIMIT_SECONDS:
         return _twiml("One moment — still processing your last command.")
+
+    # one car, one screen: never drive the UI from two workers at once
+    if not _claim_ui():
+        return _twiml("One moment — still working on your last command.")
     _last_cmd_at[sender] = now
 
     _run_bg(_do_command, sender, command)
