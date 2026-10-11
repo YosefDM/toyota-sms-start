@@ -536,6 +536,23 @@ class AppReportedSuccess(unittest.TestCase):
         # adb shell re-splits its arguments on the device, so the space-bearing stamp must be quoted.
         self.assertIn("'10-11 22:34:50.000'", seen["args"])
 
+    def test_every_space_bearing_adb_arg_is_quoted(self):
+        # An unquoted "+%m-%d %H:%M:%S.000" reaches toybox as two arguments -> `date: Max 1
+        # argument`, and the whole fallback silently returns False.
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            return "10-11 22:34:50.000" if args[:2] == ("shell", "date") else ""
+
+        tc._adb = fake
+        tc.app_reported_success("lock", 1791757490000)
+        for args in calls:
+            for a in args:
+                if " " in a:
+                    self.assertTrue(a.startswith("'") and a.endswith("'"),
+                                    f"unquoted space-bearing adb arg: {a!r}")
+
 
 if __name__ == "__main__":
     unittest.main()
