@@ -13,10 +13,13 @@ from the notification shade (`dumpsys notification --noredact`). The on-screen "
 an unreliable success signal and is NOT used to decide success.
 """
 from __future__ import annotations
+import logging
 import os
 import re
 import subprocess
 import time
+
+logger = logging.getLogger("toyota_control")
 
 ADB = os.environ.get("ADB_PATH", "adb")
 SERIAL = os.environ.get("ADB_SERIAL", "emulator-5554")
@@ -28,6 +31,10 @@ KEYWORD_ALIASES: dict[str, str] = {
     "help": "help", "?": "help", "commands": "help", "menu": "help", "list": "help",
     "status": "status", "stat": "status", "info": "status",
     "start": "start", "remote start": "start", "engine": "start",
+    # NB: deliberately NO "stop" alias — the carrier/TextGrid intercepts STOP as the opt-out
+    # keyword, so it never reaches us, and treating an opt-out as an engine command would be wrong.
+    "shutoff": "shutoff", "shut off": "shutoff", "engine off": "shutoff",
+    "stop engine": "shutoff", "kill engine": "shutoff",
     "lock": "lock",
     "unlock": "unlock", "open": "unlock",
     "trunk": "unlock_trunk", "unlock trunk": "unlock_trunk", "lock trunk": "lock_trunk",
@@ -46,13 +53,19 @@ HELP_TEXT = (
     "LIGHTS, HAZARDS, HORN, BUZZER\n"
     "TRUNK YES - unlock trunk (needs YES)\n"
     "LOCK TRUNK - lock trunk\n"
-    "HELP - this list"
+    "SHUTOFF - stop a running remote start\n"
+    "? - this list"
 )
 
 # Canonical command -> (resource-id, disambiguating label | None).
 # The two trunk buttons SHARE one resource-id, so they must be told apart by their label.
+# The engine tile is EITHER Start or Stop, depending on whether a remote start is running.
+ENGINE_START_ID = "remote_engine_start_button"
+ENGINE_STOP_ID = "remote_engine_stop_button"
+
 COMMAND_IDS: dict[str, tuple[str, str | None]] = {
-    "start": ("remote_engine_start_button", None),
+    "start": (ENGINE_START_ID, None),
+    "shutoff": (ENGINE_STOP_ID, None),
     "lock": ("remote_door_lock_button", None),
     "unlock": ("remote_door_unlock_button", None),
     "lights": ("remote_lights_button", None),
@@ -65,10 +78,24 @@ COMMAND_IDS: dict[str, tuple[str, str | None]] = {
 
 # All of these ids must be present for us to believe we're on the Advanced Remote panel.
 ANCHOR_IDS = {
-    "remote_engine_start_button", "remote_door_lock_button", "remote_door_unlock_button",
+    "remote_door_lock_button", "remote_door_unlock_button",
     "remote_trunk_lock_button", "remote_lights_button", "remote_horn_button",
     "remote_buzzer_button", "remote_hazard_button", "remote_progress_text",
 }
+
+# ...plus the engine tile, which is NOT a fixed id: while a remote start is running the app swaps
+# the Start button for a Stop button, so exactly ONE of these is on the panel at any time.
+# Requiring `remote_engine_start_button` outright is what made EVERY command fail for the ~10
+# minutes after a successful START (five such SMS failures, 2026-10-07..11): the panel was fine,
+# the guard was just asking for a button the app had legitimately replaced.
+ENGINE_ANCHOR_IDS = {ENGINE_START_ID, ENGINE_STOP_ID}
+
+
+def _panel_confirmed(ids: set[str]) -> bool:
+    """True when `ids` (the resource-ids in a dump) prove we're on the Advanced Remote panel:
+    every fixed anchor, plus either engine button."""
+    return ANCHOR_IDS <= ids and bool(ENGINE_ANCHOR_IDS & ids)
+
 
 # Commands that physically open the car — require a confirmation word to avoid an accidental unlock.
 CONFIRM_REQUIRED = {"unlock", "unlock_trunk"}
@@ -86,6 +113,11 @@ class NotLoggedIn(ControlError):
 
 class UINavigationError(ControlError):
     """Couldn't reach / confirm the Advanced Remote panel — refuse to tap rather than guess."""
+
+
+class CommandNotApplicable(ControlError):
+    """The panel is fine, but this command doesn't apply right now (e.g. START while the engine is
+    already remote-running). Carries a complete, user-facing sentence — not an error to dress up."""
 
 
 # --------------------------------------------------------------------------- adb plumbing
@@ -132,9 +164,30 @@ _ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 
+_DUMP_ATTEMPTS = int(os.environ.get("DUMP_ATTEMPTS", "3"))
+
+
 def _ui_dump() -> str:
-    _adb("shell", "uiautomator", "dump", "/sdcard/ui.xml", timeout=20)
-    return _adb("shell", "cat", "/sdcard/ui.xml", timeout=15)
+    """Dump the current view hierarchy, retrying a transient failure.
+
+    `uiautomator dump` intermittently fails with an EMPTY error message while the app is mid-
+    animation or the device is busy — that produced the 2026-10-09 SMS "Couldn't send lights: adb
+    shell uiautomator dump /sdcard/ui.xml failed:". It succeeds on a retry a moment later, so a
+    bare first failure must never become the user's answer.
+    """
+    last: Exception | None = None
+    for attempt in range(_DUMP_ATTEMPTS):
+        try:
+            _adb("shell", "uiautomator", "dump", "/sdcard/ui.xml", timeout=20)
+            xml = _adb("shell", "cat", "/sdcard/ui.xml", timeout=15)
+            if "<node" in xml:
+                return xml
+            last = ControlError("uiautomator produced no node tree")
+        except ControlError as e:
+            last = e
+        if attempt < _DUMP_ATTEMPTS - 1:
+            time.sleep(1.5)
+    raise ControlError(f"couldn't read the screen after {_DUMP_ATTEMPTS} attempts ({last})")
 
 
 def _nodes(xml: str) -> list[dict]:
@@ -309,7 +362,7 @@ def _try_reach_advanced_remote() -> list[dict] | None:
         _assert_logged_in(_foreground_activity())
 
     nodes = _nodes(_ui_dump())
-    if ANCHOR_IDS <= _present_ids(nodes):
+    if _panel_confirmed(_present_ids(nodes)):
         return nodes
 
     # Not on the full panel yet. Make sure the Remote tab is selected.
@@ -318,7 +371,7 @@ def _try_reach_advanced_remote() -> list[dict] | None:
         _adb("shell", "input", "tap", str(tab[0]), str(tab[1]))
         time.sleep(2)
         nodes = _nodes(_ui_dump())
-        if ANCHOR_IDS <= _present_ids(nodes):
+        if _panel_confirmed(_present_ids(nodes)):
             return nodes
 
     # The quick buttons and the ⋯ "More Horizontal" entry sit below the fold on the Remote tab, so
@@ -330,11 +383,11 @@ def _try_reach_advanced_remote() -> list[dict] | None:
             _adb("shell", "input", "tap", str(more[0]), str(more[1]))
             time.sleep(3)
             nodes = _nodes(_ui_dump())
-            if ANCHOR_IDS <= _present_ids(nodes):
+            if _panel_confirmed(_present_ids(nodes)):
                 return nodes
         _scroll_up()
         nodes = _nodes(_ui_dump())
-        if ANCHOR_IDS <= _present_ids(nodes):
+        if _panel_confirmed(_present_ids(nodes)):
             return nodes
     return None
 
@@ -355,16 +408,31 @@ def ensure_on_advanced_remote() -> list[dict]:
     NotLoggedIn immediately if the app is signed out.
     """
     for attempt in range(_PANEL_ATTEMPTS):
-        reached = _try_reach_advanced_remote()
+        try:
+            reached = _try_reach_advanced_remote()
+        except NotLoggedIn:
+            raise  # a sign-out is not transient — surface it immediately
+        except ControlError:
+            # A dump fails for the SAME reason this retry loop exists (mid-animation / busy device),
+            # so let it fall through to the settle-wait instead of escaping as a hard error.
+            reached = None
         if reached is not None:
             return reached
         if attempt < _PANEL_ATTEMPTS - 1:
             time.sleep(_PANEL_RETRY_WAIT)  # let a transient post-command transition settle, then retry
 
-    missing = ANCHOR_IDS - _present_ids(_nodes(_ui_dump()))
+    try:
+        present = _present_ids(_nodes(_ui_dump()))
+    except ControlError as e:
+        raise UINavigationError(
+            f"Couldn't read the screen after {_PANEL_ATTEMPTS} attempts ({e}) — refusing to tap."
+        ) from e
+    missing = sorted(ANCHOR_IDS - present)
+    if not (ENGINE_ANCHOR_IDS & present):
+        missing.append("an engine button (start or stop)")
     raise UINavigationError(
         f"Advanced Remote panel not confirmed after {_PANEL_ATTEMPTS} attempts (missing: " +
-        ", ".join(sorted(missing)) + "). Possible login expiry, a dialog, or a UI change — refusing to tap."
+        ", ".join(missing) + "). Possible login expiry, a dialog, or a UI change — refusing to tap."
     )
 
 
@@ -394,6 +462,28 @@ def execute(command: str) -> int:
 
     target = _find(nodes, rid, label)
     if target is None:
+        # The engine tile is a toggle, so a missing Start/Stop button is the car's STATE, not a
+        # broken panel — say which it is instead of emitting a resource-id at the owner.
+        present = _present_ids(nodes)
+        if command == "start" and ENGINE_STOP_ID in present:
+            raise CommandNotApplicable(
+                "The engine is already running from a remote start — it shuts off automatically "
+                "about 10 minutes after it started. Reply SHUTOFF to stop it now."
+            )
+        if command == "shutoff" and ENGINE_START_ID in present:
+            # The tile only flips once the app refreshes remote status, so a Start tile is NOT proof
+            # the engine is off — right after a START it still reads Start for a while. Re-check
+            # after a settle, and if it still shows Start, report what we can SEE rather than
+            # asserting the car's state and leaving a running engine with no way to stop it.
+            time.sleep(5)
+            nodes = ensure_on_advanced_remote()
+            target = _find(nodes, rid, label)
+            if target is None:
+                raise CommandNotApplicable(
+                    "I can't see a Stop button on the Remote panel, so I haven't shut anything off. "
+                    "If you just started the engine, give it a few seconds and send SHUTOFF again; "
+                    "a remote start also stops on its own about 10 minutes in."
+                )
         raise UINavigationError(
             f"control for '{command}' (id={rid}" + (f", label={label!r}" if label else "") +
             ") not found on the panel — refusing to tap."
@@ -407,7 +497,14 @@ def execute(command: str) -> int:
     # Remote start (and climate) interposes a "Caution" safety sheet that must be confirmed before the
     # request is sent — handle it (tick "don't show again" + Continue). START waits for it to appear;
     # other commands never raise it, so they just do one cheap check as a safety net.
-    _dismiss_caution_dialog(max_wait=6.0 if command == "start" else 0.0)
+    # The command has ALREADY been sent at this point, so a failure to read the screen must not
+    # become the owner's answer: `_ui_dump` now raises when it can't get a node tree, and before
+    # this guard that turned a delivered command into "Couldn't send lock: couldn't read the
+    # screen". Non-start commands never raise the Caution sheet anyway.
+    try:
+        _dismiss_caution_dialog(max_wait=6.0 if command == "start" else 0.0)
+    except ControlError as e:
+        logger.warning("couldn't re-read the screen after the tap (the command was already sent): %s", e)
 
     # The UI may sit on "Sending…" even after the command fires; the car (and its push notification)
     # is the source of truth. We do NOT block on the spinner.
@@ -450,12 +547,84 @@ def _toyota_notifications() -> list[dict]:
     return records
 
 
-def await_result(since_ms: int, timeout: int | None = None, poll: float = 2.0) -> dict | None:
+# Result codes Toyota puts in its own push text, as observed live. Used ONLY to reject a push that
+# demonstrably belongs to a DIFFERENT command — anything unrecognised is still accepted, so a command
+# whose code we haven't catalogued yet keeps working, and so do the shared failure pushes ([D1],
+# [70], ...), which are the legitimate answer to whatever we just sent.
+_RESULT_CODES: dict[str, re.Pattern[str]] = {
+    "lock": re.compile(r"\[DL1\]"),
+    "unlock": re.compile(r"\[DL0\]"),
+    "start": re.compile(r"\[RES1\]"),
+    # [RES0] observed live 2026-10-11: "Remote Engine Stop Request was successful. [RES0]" — it is
+    # in the same RES family as start, so cataloguing it keeps the two from answering each other.
+    "shutoff": re.compile(r"\[RES0\]"),
+    "hazards": re.compile(r"\[HZ1\]"),
+}
+
+
+def _is_other_commands_result(text: str, command: str | None) -> bool:
+    """True when this push carries another command's success code and not our own.
+
+    Without this check a result is matched on timestamp alone, so a push still landing from the
+    PREVIOUS command gets delivered as this one's answer — on 2026-10-08 a START was answered
+    "The vehicle is now locked. [DL1]", i.e. the owner was told the wrong thing about the car.
+    """
+    if not text or command is None:
+        return False  # no command given means no expectation to check against
+    mine = _RESULT_CODES.get(command)
+    if mine is not None and mine.search(text):
+        return False
+    return any(cmd != command and pat.search(text) for cmd, pat in _RESULT_CODES.items())
+
+
+# The app logs its OWN outcome for a command the moment Toyota accepts it, as an analytics event
+# ("local#app#remote_lock_success"). That is a LOCAL signal — reading the log is observation, the
+# same kind the screen is — and it does not depend on the FCM push coming back. Only these three
+# commands emit one; the full `remote_*` event vocabulary was read out of the shipped APK's DEX.
+_APP_SUCCESS_EVENTS = {
+    "lock": "remote_lock_success",
+    "unlock": "remote_unlock_success",
+    "start": "remote_start_success",
+}
+
+
+def _logcat_since(since_ms: int) -> str:
+    """Log lines posted at/after `since_ms` (device epoch ms), or "" if they can't be read.
+
+    The timestamp is formatted ON THE DEVICE so it matches logcat's own clock and timezone.
+    EVERY argument containing a space must be quoted: `adb shell` joins its arguments into one
+    command string and the device's shell re-splits it, so an unquoted "+%m-%d %H:%M:%S.000"
+    arrives as two arguments and toybox answers `date: Max 1 argument`.
+    """
+    try:
+        stamp = _adb("shell", "date", "-d", f"@{since_ms // 1000}",
+                     "'+%m-%d %H:%M:%S.000'", timeout=10).strip()
+        if not stamp:
+            return ""
+        return _adb("shell", "logcat", "-d", "-t", f"'{stamp}'", timeout=30)
+    except Exception:
+        return ""
+
+
+def app_reported_success(command: str, since_ms: int) -> bool:
+    """True when the app itself logged this command as successful since `since_ms`.
+
+    The fallback for when Toyota's push never arrives. On 2026-10-11 the rig's FCM connection went
+    down (GMS stuck retrying) while commands kept working, so every reply became the useless "No
+    confirmation came back within 25s" even though the car had done what it was told.
+    """
+    event = _APP_SUCCESS_EVENTS.get(command)
+    return bool(event) and event in _logcat_since(since_ms)
+
+
+def await_result(since_ms: int, timeout: int | None = None, poll: float = 2.0,
+                 command: str | None = None) -> dict | None:
     """Poll the notification shade for a Toyota command-result push posted at/after `since_ms`.
 
-    Returns the newest matching {title, text, when}, or None if none arrives within `timeout` seconds.
-    A small skew tolerance absorbs device clock granularity; the per-sender rate limit keeps an older
-    command's notification from being mistaken for this one.
+    Returns the newest matching {title, text, when}, or None if none arrives within `timeout`
+    seconds. A small skew tolerance absorbs device clock granularity. Pushes carrying another
+    command's result code are skipped, so a straggler from the previous command can't be reported
+    as this one's outcome.
     """
     timeout = RESULT_TIMEOUT if timeout is None else timeout
     skew = 2000
@@ -463,7 +632,16 @@ def await_result(since_ms: int, timeout: int | None = None, poll: float = 2.0) -
     best: dict | None = None
     while True:
         for r in _toyota_notifications():
-            if r["when"] >= since_ms - skew and (best is None or r["when"] > best["when"]):
+            if r["when"] < since_ms - skew:
+                continue
+            if _is_other_commands_result(r.get("text", ""), command):
+                # Log it: if a command whose code we haven't catalogued (shutoff, the trunk pair)
+                # ever reuses a known family, this is the only way the mismatch becomes visible
+                # instead of silently becoming "no confirmation came back".
+                logger.info("ignoring a push carrying another command's code while waiting "
+                            "for %r: %s", command, r.get("text", "")[:90])
+                continue
+            if best is None or r["when"] > best["when"]:
                 best = r
         if best is not None or time.time() >= deadline:
             return best
