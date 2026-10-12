@@ -1,7 +1,7 @@
 """Voice (phone-call) control path: press one speed-dial key, the car starts.
 
 The owner carries a basic phone, so this is the second control channel alongside SMS. The intended
-gesture is a *speed dial*: a contact stored as ``+1845XXXXXXX,,4821`` — the handset dials, waits
+gesture is a *speed dial*: a contact stored as ``+1555XXXXXXX,,4821`` — the handset dials, waits
 out the comma pauses, autosends the code as DTMF, and the engine starts. No typing, one keypress.
 The taps themselves still go through `toyota_control` — UI only, never an API call to the car.
 
