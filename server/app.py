@@ -125,7 +125,19 @@ except v.CodeTableError as e:
     VOICE_CODES, VOICE_CODES_ERROR = {}, str(e)
     logger.error("VOICE_CODES is invalid, so the phone path is disabled: %s", e)
 
-app = FastAPI(title="Toyota SMS Remote")
+# FastAPI publishes /docs, /redoc and /openapi.json by default. On a box whose hostname is the one
+# thing an attacker is most likely to learn, that hands them the complete endpoint map and every
+# parameter name for free -- the first thing anyone probing this would fetch. Nothing here is a
+# public API: the only legitimate clients are TextGrid's webhooks, which need no discovery. Set
+# EXPOSE_API_DOCS=1 if you ever want them locally.
+_DOCS = os.environ.get("EXPOSE_API_DOCS", "").strip().lower() in ("1", "true", "yes")
+
+app = FastAPI(
+    title="Toyota SMS Remote",
+    docs_url="/docs" if _DOCS else None,
+    redoc_url="/redoc" if _DOCS else None,
+    openapi_url="/openapi.json" if _DOCS else None,
+)
 _voice_throttle = v.Throttle()
 _voice_jobs = v.Jobs()
 _last_cmd_at: dict[str, float] = {}
@@ -447,6 +459,15 @@ def _do_command(to: str, command: str, token: int | None = None) -> None:
 
 @app.get("/health")
 def health():
+    """Liveness for the watchdog, and deliberately unauthenticated.
+
+    It does leak one bit to anyone who knows the hostname -- whether the rig is currently up. That
+    is accepted rather than fixed: gating it on the caller's IP looks like protection and is not,
+    because uvicorn takes the client address from X-Forwarded-For (cloudflared connects from
+    127.0.0.1, which is inside the default trusted-proxy set), so a caller can influence what this
+    code would be checking. A spoofable check that also risks breaking the watchdog is worse than
+    an honest one-bit leak.
+    """
     return {"ok": True, "device_online": tc.device_online()}
 
 
