@@ -13,17 +13,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import toyota_control as tc  # noqa: E402
 import voice as v  # noqa: E402
 
-GOOD = "4821:start,7390:lock,5566:unlock"
+GOOD = "482100:start,739000:lock,556600:unlock"
 
 
 class CodeTable(unittest.TestCase):
     def test_parses_and_normalises(self):
         self.assertEqual(v.parse_codes(GOOD),
-                         {"4821": "start", "7390": "lock", "5566": "unlock"})
+                         {"482100": "start", "739000": "lock", "556600": "unlock"})
 
     def test_whitespace_and_trailing_comma_are_tolerated(self):
-        self.assertEqual(v.parse_codes(" 4821 : start , 7390:LOCK ,"),
-                         {"4821": "start", "7390": "lock"})
+        self.assertEqual(v.parse_codes(" 482100 : start , 739000:LOCK ,"),
+                         {"482100": "start", "739000": "lock"})
 
     def test_empty_is_an_empty_table_not_an_error(self):
         # An unset VOICE_CODES means "the phone path isn't set up", which app.py reports as such.
@@ -32,34 +32,42 @@ class CodeTable(unittest.TestCase):
 
     def test_non_digit_code_rejected(self):
         with self.assertRaises(v.CodeTableError):
-            v.parse_codes("48a1:start")
+            v.parse_codes("48a100:start")
 
     def test_short_code_rejected(self):
-        with self.assertRaises(v.CodeTableError):
-            v.parse_codes("482:start")
+        # 4 and 5 digits are now refused: against the real lockout (~480 guesses/day) a 4-digit
+        # code falls in about three weeks, which is an attack someone would actually run.
+        for code in ("482", "4821", "48210"):
+            with self.assertRaises(v.CodeTableError, msg=code):
+                v.parse_codes(f"{code}:start")
+
+    def test_minimum_is_six_digits(self):
+        self.assertEqual(v.MIN_CODE_LENGTH, 6)
+        self.assertEqual(v.parse_codes("482100:start"), {"482100": "start"})
 
     def test_command_outside_the_phone_set_rejected(self):
         # The whole point of VOICE_ALLOWED_COMMANDS: a keypad code must not reach the trunk.
-        for entry in ("4821:unlock_trunk", "4821:horn", "4821:status", "4821:nonsense"):
+        for entry in ("482100:unlock_trunk", "482100:horn", "482100:status",
+                      "482100:nonsense"):
             with self.assertRaises(v.CodeTableError, msg=entry):
                 v.parse_codes(entry)
 
     def test_duplicate_code_rejected(self):
         with self.assertRaises(v.CodeTableError):
-            v.parse_codes("4821:start,4821:lock")
+            v.parse_codes("482100:start,482100:lock")
 
     def test_mixed_lengths_rejected(self):
         # <Gather> ends on numDigits alone, so one table cannot hold two lengths.
         with self.assertRaises(v.CodeTableError):
-            v.parse_codes("4821:start,73901:lock")
+            v.parse_codes("482100:start,7390010:lock")
 
     def test_malformed_entry_rejected(self):
-        for entry in ("4821", "4821:", ":start"):
+        for entry in ("482100", "482100:", ":start"):
             with self.assertRaises(v.CodeTableError, msg=entry):
                 v.parse_codes(entry)
 
     def test_code_length_is_the_shared_length(self):
-        self.assertEqual(v.code_length(v.parse_codes(GOOD)), 4)
+        self.assertEqual(v.code_length(v.parse_codes(GOOD)), 6)
 
 
 class Lookup(unittest.TestCase):
@@ -67,25 +75,25 @@ class Lookup(unittest.TestCase):
         self.table = v.parse_codes(GOOD)
 
     def test_hit(self):
-        self.assertEqual(v.lookup(self.table, "7390"), "lock")
+        self.assertEqual(v.lookup(self.table, "739000"), "lock")
 
     def test_miss(self):
-        self.assertIsNone(v.lookup(self.table, "0000"))
+        self.assertIsNone(v.lookup(self.table, "000000"))
 
     def test_empty_and_none_miss(self):
         self.assertIsNone(v.lookup(self.table, ""))
         self.assertIsNone(v.lookup(self.table, None))
 
     def test_surrounding_whitespace_still_matches(self):
-        self.assertEqual(v.lookup(self.table, " 4821 "), "start")
+        self.assertEqual(v.lookup(self.table, " 482100 "), "start")
 
     def test_prefix_and_extra_digits_do_not_match(self):
         # A handset that sends an extra tone must not actuate anything.
-        self.assertIsNone(v.lookup(self.table, "482"))
-        self.assertIsNone(v.lookup(self.table, "48211"))
+        self.assertIsNone(v.lookup(self.table, "48210"))
+        self.assertIsNone(v.lookup(self.table, "4821001"))
 
     def test_empty_table_matches_nothing(self):
-        self.assertIsNone(v.lookup({}, "4821"))
+        self.assertIsNone(v.lookup({}, "482100"))
 
 
 class PhonePathInvariants(unittest.TestCase):
@@ -277,6 +285,38 @@ class ThrottleTests(unittest.TestCase):
         th.record_failure("+1555", now=100)
         th.record_success("+1555")
         self.assertEqual(th.record_failure("+1555", now=101), 0)
+
+    def test_rotating_callers_cannot_reset_the_budget_forever(self):
+        """The finding this closes: per-caller counting alone is multiplied by the number of
+        allowlisted numbers, and the attacker picks which one to present."""
+        th = v.Throttle(max_failures=5, window=900, lockout=900, global_max_failures=8)
+        locked = 0
+        # eight wrong codes spread over eight DIFFERENT callers: no per-caller limit is ever hit
+        for i in range(8):
+            locked = th.record_failure(f"+1555000{i:04d}", now=100 + i)
+        self.assertEqual(locked, 900, "the global cap should have fired")
+        # ...and a fresh, never-seen caller is now refused too (the clock started on the 8th
+        # failure at now=107, so a few seconds have already elapsed by now=110)
+        self.assertGreater(th.locked_for("+15559999999", now=110), 880)
+
+    def test_the_global_cap_sits_above_the_per_caller_one(self):
+        # With a single allowlisted number the per-caller limit must always trip first, so the
+        # owner never meets the global one.
+        th = v.Throttle()
+        self.assertGreater(th.global_max_failures, th.max_failures)
+
+    def test_a_correct_code_clears_the_global_counter_too(self):
+        # Otherwise a few fumbled calls over a day could accumulate into a global lockout.
+        th = v.Throttle(max_failures=5, window=900, lockout=900, global_max_failures=3)
+        th.record_failure("+15551234567", now=100)
+        th.record_failure("+15559999999", now=101)
+        th.record_success("+15551234567")
+        self.assertEqual(th.record_failure("+15558888888", now=102), 0)
+
+    def test_global_failures_also_age_out(self):
+        th = v.Throttle(max_failures=5, window=60, lockout=900, global_max_failures=2)
+        th.record_failure("+15551111111", now=100)
+        self.assertEqual(th.record_failure("+15552222222", now=200), 0)
 
     def test_not_locked_by_default(self):
         self.assertEqual(v.Throttle().locked_for("+1555"), 0)

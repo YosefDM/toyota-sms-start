@@ -71,9 +71,12 @@ logger = logging.getLogger("toyota_voice")
 # (see app.py).
 VOICE_ALLOWED_COMMANDS = ("start", "lock", "unlock")
 
-# A code shorter than this is not a secret. Four digits is 10k guesses; the attempt limiter below
-# is what actually makes that unprofitable, so keep both.
-MIN_CODE_LENGTH = 4
+# A code shorter than this is not a secret, and the limiter below is not strong enough to rescue a
+# short one. Do the arithmetic against the real lockout (5 wrong codes per caller per 15 minutes,
+# i.e. ~480 guesses/day): a 4-digit code is 10,000 possibilities, so ~21 days of patient dialling --
+# which is a real attack, not a theoretical one. Six digits is 1,000,000, or ~5.7 years, and costs
+# the owner nothing because the handset types the code for them off a speed dial.
+MIN_CODE_LENGTH = 6
 
 SAY_VOICE = os.environ.get("VOICE_TTS_VOICE", "Polly.Joanna")
 SAY_LANGUAGE = os.environ.get("VOICE_TTS_LANGUAGE", "en-US")
@@ -276,42 +279,72 @@ class Throttle:
     automatable guessing channel — so wrong codes are counted across calls (keyed on the caller),
     not just within one, and the lockout is deliberately long enough to make exhaustive guessing
     hopeless while staying short enough to not strand the owner who fat-fingered it.
+
+    There is also a GLOBAL cap, counted across all callers under the key `_GLOBAL`. Per-caller
+    counting alone can be multiplied by the number of allowlisted numbers: with the owner plus a
+    spouse on the allowlist, a caller spoofing each in turn gets two budgets, and the attacker
+    chooses which to present. The global threshold is set well above the per-caller one, so with a
+    single allowlisted number the per-caller limit always trips first and the owner never meets it.
+
+    It is a deliberate trade-off: a global lockout can be induced by an attacker, which denies the
+    owner the phone path for the lockout window. That is accepted because the SMS path is
+    unaffected (it has no code to guess) and because an unlimited guess budget against the unlock
+    code is the worse failure.
     """
 
-    def __init__(self, max_failures: int = 5, window: int = 900, lockout: int = 900):
+    _GLOBAL = "*all-callers*"  # not a valid E.164 number, so no caller can collide with it
+
+    def __init__(self, max_failures: int = 5, window: int = 900, lockout: int = 900,
+                 global_max_failures: int = 15):
         self.max_failures = max_failures
         self.window = window
         self.lockout = lockout
+        self.global_max_failures = global_max_failures
         self._fails: dict[str, list[float]] = {}
         self._locked_until: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def locked_for(self, caller: str, now: float | None = None) -> int:
-        """Seconds of lockout left for this caller (0 when not locked)."""
+        """Seconds of lockout left for this caller (0 when not locked).
+
+        The answer is the longer of this caller's own lockout and the global one.
+        """
         now = time.time() if now is None else now
         with self._lock:
-            until = self._locked_until.get(caller, 0.0)
+            until = max(self._locked_until.get(caller, 0.0),
+                        self._locked_until.get(self._GLOBAL, 0.0))
             return max(0, int(round(until - now))) if until > now else 0
 
     def record_failure(self, caller: str, now: float | None = None) -> int:
         """Note a wrong code. Returns the seconds of lockout now in force (0 if still allowed)."""
         now = time.time() if now is None else now
         with self._lock:
-            recent = [t for t in self._fails.get(caller, []) if now - t < self.window]
-            recent.append(now)
-            self._fails[caller] = recent
-            if len(recent) >= self.max_failures:
-                self._locked_until[caller] = now + self.lockout
-                self._fails[caller] = []
-                logger.warning("voice: locking out caller %s for %ds after %d wrong codes",
-                               caller[-4:] or "?", self.lockout, len(recent))
-                return self.lockout
-            return 0
+            locked = 0
+            for key, limit in ((caller, self.max_failures),
+                              (self._GLOBAL, self.global_max_failures)):
+                recent = [t for t in self._fails.get(key, []) if now - t < self.window]
+                recent.append(now)
+                self._fails[key] = recent
+                if len(recent) >= limit:
+                    self._locked_until[key] = now + self.lockout
+                    self._fails[key] = []
+                    logger.warning("voice: locking out %s for %ds after %d wrong codes",
+                                   "ALL CALLERS (global cap)" if key is self._GLOBAL
+                                   else f"caller {caller[-4:] or '?'}", self.lockout, len(recent))
+                    locked = self.lockout
+            return locked
 
     def record_success(self, caller: str) -> None:
+        """A correct code clears this caller's record, and the global one with it.
+
+        Clearing the global counter on success is intentional: whoever just proved they hold a
+        valid code is the owner, so the accumulated noise was not an attack in progress. Without
+        this, a few fumbled calls over a day could still add up to a global lockout.
+        """
         with self._lock:
-            self._fails.pop(caller, None)
-            self._locked_until.pop(caller, None)
+            for key in (caller, self._GLOBAL):
+                self._fails.pop(key, None)
+                self._locked_until.pop(key, None)
 
 
 # --------------------------------------------------------------------------- in-call job store

@@ -191,8 +191,8 @@ the engine starts. Same emulator, same taps, same hard rule.
 - The number's **voiceUrl** (HTTP POST) → `https://<host>/voice`, through the SAME Cloudflare
   Tunnel and the same uvicorn on `127.0.0.1:8080`. Nothing new to run or supervise.
 - `VOICE_PUBLIC_URL` must equal that URL **byte-for-byte and end in `/voice`**: it is the signed
-  URL, the base for the `<Gather action=…>` callbacks (`/voice/code`, `/voice/confirm`,
-  `/voice/wait`) and the base for the `<Play>` tone URLs.
+  URL, the base for the `<Gather action=…>` callbacks (`/voice/code`, `/voice/wait`) and the
+  base for the `<Play>` tone URLs.
 - `VOICE_CODES="4821:start,7390:lock,5566:unlock"` in the VM's `server/.env` (hand-managed, not
   deployed — same as the webhook secret). Empty ⇒ the phone path is off and says so.
 
@@ -320,6 +320,27 @@ A comma is 2s on most handsets and 3s on some, and you cannot subdivide it, so t
 If a handset ever needs more than ~3 commas, raise `VOICE_GATHER_TIMEOUT` rather than stacking
 commas against a deadline. `VOICE_FIRST_PAUSE` (8s) and `VOICE_LOOP_PAUSE` (5s) are unrelated —
 they set how often the hold loop checks back.
+
+### Why the phone path refuses to run without an allowlist
+`ALLOWED_NUMBERS` is **required** for voice, and an empty one turns the path off rather than letting
+every caller through (the SMS idiom `if ALLOWED_NUMBERS and caller not in ...` fails open; here that
+is a hole). The reason is that the wrong-code lockout is counted **per caller**: an unrestricted
+caller can present a new caller ID on each call and get a fresh guess budget every time, which
+leaves the codes -- `unlock` among them -- with no effective attempt limit at all. On this channel
+the allowlist is part of the rate limit, not just an authorisation check.
+
+Two further limits back it up:
+- **Six-digit minimum** (`voice.MIN_CODE_LENGTH`). Against the real lockout (5 wrong per caller per
+  15 min, ~480 guesses/day) a 4-digit code is ~21 days of patient dialling -- an attack someone
+  would actually run. Six digits is ~5.7 years, and costs the owner nothing because the handset
+  types it off a speed dial.
+- **A global cap** (`Throttle.global_max_failures`, 15) counted across all callers. Per-caller
+  counting is multiplied by the size of the allowlist -- owner plus spouse is two budgets, and the
+  attacker chooses which to present. It sits above the per-caller limit, so with one allowlisted
+  number the per-caller limit always trips first and the owner never meets it. The trade-off is
+  accepted deliberately: a global lockout **can** be induced by an attacker, denying the owner the
+  phone path for the window, but SMS is unaffected (no code to guess) and an unlimited guess budget
+  against the unlock code is the worse failure. A correct code clears the global counter.
 
 ### Only three commands by phone
 `start`, `lock`, `unlock` — enforced by `VOICE_ALLOWED_COMMANDS`, with a test that fails if the

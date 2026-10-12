@@ -10,8 +10,10 @@ Two control channels, one car:
 Security:
   - verifies TextGrid's request signature (X-TextGrid-Signature) against the raw body
   - allowlists sender/caller numbers (ALLOWED_NUMBERS)
-  - requires a confirmation word for car-opening commands (unlock / unlock trunk) — on the phone
-    path that is a second, separate keypress
+  - requires a confirmation word for car-opening commands (unlock / unlock trunk) on SMS. The
+    phone path has NO confirming keypress: on a speed dial it would be stored in the same contact
+    as the code and autosent by the same press, so it distinguished nothing. There, the
+    per-command secret code is what makes an unlock deliberate (see `voice_code`).
   - the voice path adds a per-command secret code, and locks a caller out after repeated wrong ones
 Run behind HTTPS (point the TextGrid number's smsUrl at PUBLIC_URL and its voiceUrl at
 VOICE_PUBLIC_URL); expose via a tunnel (e.g. Cloudflare Tunnel) in front of uvicorn on 127.0.0.1.
@@ -98,12 +100,26 @@ VOICE_PUBLIC_URL = os.environ.get("VOICE_PUBLIC_URL", "").rstrip("/")
 VOICE_REQUIRE_SIGNATURE = os.environ.get("VOICE_REQUIRE_SIGNATURE", "1").strip().lower() not in (
     "0", "false", "no")
 # How long the caller is parked in the say/pause/redirect hold loop before we give up on Toyota's
-# push. Slightly longer than RESULT_TIMEOUT so the loop outlives the thing it is waiting for.
-VOICE_HOLD_SECONDS = int(os.environ.get("VOICE_HOLD_SECONDS", "45"))
-# An auto-lock-and-retry is three commands back to back (~100s), so the hold loop needs a much
-# longer rope once one is under way — otherwise it would hang up with `partial` on a start that is
-# about to succeed, which is the single most misleading thing this path could do.
-VOICE_RETRY_HOLD_SECONDS = int(os.environ.get("VOICE_RETRY_HOLD_SECONDS", "150"))
+# push.
+#
+# This MUST be measured against a whole attempt, not just the push wait. The clock starts at
+# DISPATCH (`job["created"]` is set before the worker thread starts), and from there one attempt is:
+#   tc.execute        ~15-30s  (panel navigation + a HOLD_MS long-press + the Caution sheet)
+#   tc.await_result    <=RESULT_TIMEOUT (25s default)
+#   app_reported_success a few more seconds of logcat reads, only when no push arrived
+# which is ~50-70s. The old hard-coded 45s was described as "slightly longer than RESULT_TIMEOUT",
+# but RESULT_TIMEOUT is only the last leg -- so a start whose push landed late in its own window
+# got the `partial` tone ("state unknown") even though it had SUCCEEDED. That is precisely the
+# "most misleading thing this path could do" that the design is supposed to avoid, so the budget is
+# now derived instead of guessed.
+_TAP_BUDGET = int(os.environ.get("VOICE_TAP_BUDGET", "35"))     # navigate + long-press + Caution
+_FALLBACK_BUDGET = 10                                            # the logcat app-event fallback
+_ATTEMPT_BUDGET = _TAP_BUDGET + tc.RESULT_TIMEOUT + _FALLBACK_BUDGET
+VOICE_HOLD_SECONDS = int(os.environ.get("VOICE_HOLD_SECONDS", str(_ATTEMPT_BUDGET)))
+# An auto-lock-and-retry is THREE attempts back to back (start, lock, start), so it needs three
+# attempt budgets -- not the old hard-coded 150s, which was under even the optimistic total and so
+# reintroduced the same false `partial` on the exact path that takes longest.
+VOICE_RETRY_HOLD_SECONDS = int(os.environ.get("VOICE_RETRY_HOLD_SECONDS", str(3 * _ATTEMPT_BUDGET)))
 # Generous: with a speed-dial pause string the handset may still be counting commas when the
 # gather opens, and a human on a keypad is slower than this prompt is short.
 VOICE_GATHER_TIMEOUT = int(os.environ.get("VOICE_GATHER_TIMEOUT", "10"))
@@ -625,7 +641,17 @@ def _voice_gate(request: Request, raw: bytes, path: str) -> tuple[dict[str, str]
     if not VOICE_CODES:
         logger.error("a call arrived but VOICE_CODES is empty — nothing is reachable by phone")
         return form, v.say("Phone control isn't set up yet. Goodbye.")
-    if ALLOWED_NUMBERS and caller not in ALLOWED_NUMBERS:
+    # An EMPTY allowlist must switch the phone path off, not wave everyone through. `if
+    # ALLOWED_NUMBERS and caller not in ...` (the SMS idiom) fails open, and on this channel that is
+    # much worse than on SMS: the wrong-code lockout is keyed on the caller, so an unrestricted
+    # caller can rotate caller IDs and reset their guess budget on every call, leaving the codes --
+    # including unlock -- with no effective attempt limit at all. SMS has no secret to guess, so it
+    # keeps its own idiom; here the allowlist IS part of the rate limit.
+    if not ALLOWED_NUMBERS:
+        logger.error("a call arrived but ALLOWED_NUMBERS is empty — the phone path needs an "
+                     "allowlist, because the wrong-code lockout is counted per caller")
+        return form, v.say("Phone control isn't set up yet. Goodbye.")
+    if caller not in ALLOWED_NUMBERS:
         logger.warning("voice: rejecting call from un-allowlisted %s", caller[-4:] or "?")
         return form, v.say("Sorry, this number isn't authorized. Goodbye.")
 
