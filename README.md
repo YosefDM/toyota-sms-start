@@ -1,7 +1,9 @@
 # Toyota SMS Remote
 
-**Control a car by text message.** Send `TOYOTA START` to a phone number and the engine starts — no
-smartphone required. Lock, unlock, lights, hazards, and more, all from any basic phone that can send an SMS.
+**Control a car by text message — or by one keypress.** Send `TOYOTA START` to a phone number and the
+engine starts; or put that number on a **speed dial** with your code behind a comma pause
+(`+1555…,,,,,4821`), press it once on waking, and the car starts before you're out of bed. No smartphone
+required. Lock, unlock, lights, hazards, and more, all from any basic phone.
 
 > ✅ **Proven end-to-end:** a text-triggered action drives the real Toyota app and the command reaches the
 > car (verified by toggling the vehicle's hazards from an automated button press).
@@ -15,7 +17,9 @@ Toyota's Remote Connect features (remote start, lock/unlock, etc.) are only offi
 (non-smartphone) phone** but still want to start your car on a cold morning or unlock it remotely.
 
 This project bridges that gap: it runs the official Toyota app on an always-on server and lets you drive it
-by **SMS**.
+by **SMS** — or by **calling** the same number and keying a short code, which is one speed-dial keypress
+instead of six on a numeric keypad. The call answers in **tones rather than words**, so a phone held to your
+ear in the driveway never announces your car's state out loud.
 
 ---
 
@@ -24,10 +28,11 @@ by **SMS**.
 ```
   ┌────────────┐   SMS      ┌──────────┐   webhook   ┌───────────────────────────────────┐
   │ any phone  │ ─────────► │ TextGrid │ ──────────► │  always-on controller             │
-  └────────────┘  "TOYOTA   └──────────┘             │                                   │
-                    START"                           │  1. verify sender + parse keyword │
-                                                     │  2. tap the matching button in    │
-                                                     │     the Toyota app (UI only)      │
+  │            │  "TOYOTA   │          │             │                                   │
+  │            │    START"  │          │             │  1. verify caller + read keyword  │
+  │            │ ─────────► │          │ ◄── tones ──┤     or keypad code                │
+  └────────────┘  call +    └──────────┘             │  2. tap the matching button in    │
+                   4821                              │     the Toyota app (UI only)      │
                                                      │            │                      │
                                                      │            ▼                      │
                                                      │   Android emulator (rooted)       │
@@ -42,8 +47,9 @@ by **SMS**.
 </p>
 
 A real, logged-in instance of the Toyota app runs inside a rooted Android emulator on the server. An inbound
-SMS maps to a keyword, and the controller performs the corresponding **tap** on the app's UI. The app then
-makes its own normal, authenticated request to Toyota — exactly as it would if a human tapped the button.
+SMS maps to a keyword — or an inbound call's DTMF code maps to a command — and the controller performs the
+corresponding **tap** on the app's UI. The app then makes its own normal, authenticated request to Toyota —
+exactly as it would if a human tapped the button.
 
 ### Design principle: UI only
 
@@ -106,8 +112,9 @@ machine that supports hardware-accelerated Android emulation (KVM / nested virtu
 6. **Launch the app under Frida** with the anti-tamper hook. → `scripts/host/run-frida.sh`
 7. **Log in** with your Toyota account once; the session persists.
 8. **Map the commands** — each Remote Connect action is a long-press on the app's UI. → `scripts/host/commands.sh`
-9. **(Production)** Wire up the TextGrid webhook and make the setup auto-start on boot.
-   → [`docs/PRODUCTION.md`](docs/PRODUCTION.md)
+9. **(Production)** Wire up the TextGrid webhooks — the number's `smsUrl` for texting, its `voiceUrl` for
+   the call-and-code path — and make the setup auto-start on boot.
+   → [`docs/PRODUCTION.md`](docs/PRODUCTION.md), [`server/README.md`](server/README.md)
 
 > **Full step-by-step with every pitfall and its fix:** [`docs/SETUP.md`](docs/SETUP.md). If your server's
 > network inspects TLS (a corporate/content filter), see the certificate-trust and network-validation notes
@@ -127,7 +134,8 @@ scripts/
   device/         — on-device helpers (system CA install for TLS-inspecting networks)
   host/           — emulator boot, app launch, and per-command UI taps
   deploy/         — on-VM deploy script run by CI (git pull + venv + restart the webhook service)
-server/           — the TextGrid SMS webhook: verify sender → parse keyword → tap the app's button → reply
+server/           — the TextGrid webhooks: verify sender → read keyword or keypad code → tap the
+                    app's button → reply (`voice.py` holds the phone/DTMF path and its tones)
 .github/workflows/ — CI (tests), automated Claude PR review, and deploy-to-rig on merge (see docs/CICD.md)
 ```
 
@@ -142,6 +150,7 @@ server/           — the TextGrid SMS webhook: verify sender → parse keyword 
 | Per-command UI taps — all 9 commands, by resource-id + guard model | ✅ done |
 | Real success/failure feedback from the app's push notification | ✅ built |
 | TextGrid SMS bridge (sender allowlist, confirmation, replies, signature verify) | ✅ **live** — text → car, verified end-to-end |
+| Voice bridge — call + DTMF code, built for a speed dial, tone-only confirmation | 🆕 built — verified offline end-to-end; awaiting its first live call |
 | CI + automated Claude PR review + deploy-to-rig on merge | ✅ built — `.github/workflows/` |
 | Auto-start / reboot-survivable production setup | ✅ done — whole rig comes up untended on VM reboot |
 

@@ -562,6 +562,23 @@ _RESULT_CODES: dict[str, re.Pattern[str]] = {
 }
 
 
+def result_is_success(command: str | None, text: str) -> bool | None:
+    """Did this push say the command SUCCEEDED? True / False / None when we can't tell.
+
+    Toyota pushes failures down the same channel as successes ("...keyfob was detected [70]"), so
+    the mere arrival of a push is not an outcome — only its result code is. None means this command
+    has no catalogued success code (horn, lights, trunk, ...), i.e. the text is the only answer we
+    have; callers that need a verdict must not treat that as success.
+
+    Added for the voice path, which answers in TONES rather than words and so has to *decide*
+    rather than hand the sentence to the owner to read.
+    """
+    mine = _RESULT_CODES.get(command or "")
+    if mine is None:
+        return None
+    return bool(mine.search(text or ""))
+
+
 def _is_other_commands_result(text: str, command: str | None) -> bool:
     """True when this push carries another command's success code and not our own.
 

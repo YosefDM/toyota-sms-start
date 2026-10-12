@@ -181,6 +181,83 @@ The app's authoritative success/failure signal is a **push notification** from T
 - Per-sender rate limit. Outbound (operator alerts / OTP relay) will use the Twilio SDK pointed at
   `api.textgrid.com` — see `.env.example`.
 
+## Voice bridge — phone call + DTMF code (built — `server/voice.py`)
+
+The second control channel, for the gesture SMS can't match: **one speed-dial keypress**. The owner
+stores the number with the code behind comma pauses (`+1845…,,,,,4821`), presses it on waking, and
+the engine starts. Same emulator, same taps, same hard rule.
+
+### Wiring
+- The number's **voiceUrl** (HTTP POST) → `https://<host>/voice`, through the SAME Cloudflare
+  Tunnel and the same uvicorn on `127.0.0.1:8080`. Nothing new to run or supervise.
+- `VOICE_PUBLIC_URL` must equal that URL **byte-for-byte and end in `/voice`**: it is the signed
+  URL, the base for the `<Gather action=…>` callbacks (`/voice/code`, `/voice/confirm`,
+  `/voice/wait`) and the base for the `<Play>` tone URLs.
+- `VOICE_CODES="4821:start,7390:lock,5566:unlock"` in the VM's `server/.env` (hand-managed, not
+  deployed — same as the webhook secret). Empty ⇒ the phone path is off and says so.
+
+### What TextGrid's voice API actually gives us (their "Breeze Voice API" doc)
+Twilio-compatible in shape, a strict subset in practice. The three limits that shaped the code:
+- **Verbs are only `<Say> <Dial> <Gather> <Play> <Pause> <Redirect>`. There is NO `<Hangup>`** — a
+  call is ended by letting the TwiML document run out.
+- **`<Gather>` documents only `action`, `numDigits`, `timeout`** — no `finishOnKey`, so there is no
+  `#` to end the digits and **every code must be the same length**, enforced in `parse_codes`.
+- **Voices**: `man`, `female`, `Polly.*`. (`alice` appears in their example but is *not* in their
+  supported list — don't use it.)
+- Their doc covers the *outbound* call flow only; inbound voiceUrl is undocumented but serves the
+  same TwiML with the same Twilio-style params (`CallSid`, `From`, `Digits`, …). ✅ Verify on the
+  first live call.
+- **It says nothing about signing inbound voice webhooks.** `VOICE_REQUIRE_SIGNATURE=1` is the
+  default and treats voice like SMS; if live calls are refused and the log says *"no
+  X-TextGrid-Signature header"*, that's the answer — set it to `0`. The caller allowlist, the
+  per-command code and the lockout all still apply, so the path is not left unguarded.
+
+### The flow
+1. `POST /voice` — signature → config → caller allowlist → lockout, then a `<Gather numDigits=N>`
+   with the prompt **inside** it. Inside matters: a speed-dial handset blurts its DTMF over the
+   greeting, and a prompt played *before* the gather would swallow it.
+2. `POST /voice/code` — the code is matched with `compare_digest` against every entry (no
+   short-circuit, no timing side channel on a 4-digit secret). Wrong ⇒ buzz + re-gather, and the
+   failure is counted **across calls**; 5 within 15 min locks the caller out for 15 min.
+3. `unlock` still goes through `CONFIRM_REQUIRED` — a second keypress (`press 1`), which a dial
+   string can also carry: `…,,,,,5566,,1`.
+4. Dispatch claims the one UI lock (shared with SMS — one car, one screen), starts the tap on a
+   background thread, plays `accepted`, and parks the call in a silent `<Pause>`/`<Redirect>` loop.
+5. `POST /voice/wait` plays the verdict tone the moment there is one, or gives up after
+   `VOICE_HOLD_SECONDS` with `partial`. **The command is never abandoned** — only the readback is.
+
+### Tones, not words (owner-stated requirement)
+Nothing about the car is spoken: a phone at the ear in a driveway, a bystander, or a voicemail must
+not hear "the vehicle is now unlocked". Five beeps, synthesised at import by `voice.py` and served
+from memory at `/voice/tone/<name>.wav` (unauthenticated on purpose — it's what TextGrid's media
+fetcher pulls, and there is no information in a beep):
+
+| Tone | Sound | Means | Decided by |
+|---|---|---|---|
+| `accepted` | two rising | code right, command on its way | the code matched |
+| `done` | three rising | the car confirmed it | the push carries this command's own success code |
+| `partial` | two flat | sent, outcome **unknown** | no push, or only the app's own success event |
+| `failed` | two falling | refused, or never sent | `ControlError` / a push with another result code |
+| `reject` | one low buzz | code not recognised | — |
+
+`tc.result_is_success()` is what separates `done` from `failed`: Toyota pushes refusals down the
+same channel ("…keyfob was detected [70]"), so the *arrival* of a push is not an outcome — only its
+result code is. A tone can't hedge, so anything undecidable is `partial`, never `done`.
+**`partial` right after a START is the signature of the FCM push outage** — see the FCM section;
+the fix is `adb shell am force-stop com.toyota.oneapp`.
+
+### Tuning the speed dial
+`,` ≈ 2s per handset; the digits must land after the call is answered *and* after the gather opens
+(~1-2s after answer), but within `VOICE_GATHER_TIMEOUT` (10s). Start at five commas, then listen:
+nothing at all ⇒ too few (they were sent before anyone was listening); add one. `VOICE_FIRST_PAUSE`
+(8s) and `VOICE_LOOP_PAUSE` (5s) set how often the hold loop checks back.
+
+### Only three commands by phone
+`start`, `lock`, `unlock` — enforced by `VOICE_ALLOWED_COMMANDS`, with a test that fails if the
+list grows past what `COMMAND_IDS` and `CONFIRM_REQUIRED` cover. A speed-dial code sits in the
+handset's contact list in clear text, so the trunk, horn, lights, hazards and buzzer stay
+SMS-only.
+
 ## Watchdog
 
 - Screenshot on command; if the app isn't on the expected screen, relaunch + re-login.

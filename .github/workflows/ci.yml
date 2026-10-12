@@ -14,6 +14,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Byte-compile the server modules
-        run: python -m py_compile server/app.py server/toyota_control.py
+        run: python -m py_compile server/app.py server/toyota_control.py server/voice.py server/textgrid_auth.py
       - name: Unit tests (offline — no device needed)
         run: python -m unittest discover -s server/tests -v

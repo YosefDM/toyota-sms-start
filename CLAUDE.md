@@ -5,10 +5,17 @@ back onto the running rig, and what to do next. Deep detail lives in `docs/`; th
 
 ## What this is
 
-Control a **2025 Toyota Camry** by **SMS**. The owner carries a basic (non-smart) phone; they text keywords
-(`TOYOTA START`, `LOCK`, `UNLOCK`, `HAZARDS`, …) to a TextGrid number; an always-on server taps the matching
-button in the **official Toyota OneApp** running inside a rooted Android emulator, which makes the app's own
-authenticated request to Toyota. Problem → solution → setup is in `README.md`.
+Control a **2025 Toyota Camry** from a basic (non-smart) phone, over two channels into one rig:
+
+- **SMS** — text keywords (`TOYOTA START`, `LOCK`, `UNLOCK`, `HAZARDS`, …) to a TextGrid number and read
+  the car's own confirmation back.
+- **Phone call** — CALL the same number and key a per-command secret code. Built for a **speed dial**
+  (`+1845…,,,,,4821`): one keypress on waking starts the car. The call answers in **tones, not words** —
+  nothing about the car is ever spoken aloud. See `server/voice.py` and `docs/PRODUCTION.md`.
+
+Either way an always-on server taps the matching button in the **official Toyota OneApp** running inside a
+rooted Android emulator, which makes the app's own authenticated request to Toyota. Problem → solution →
+setup is in `README.md`.
 
 ### ⛔ HARD RULE (absolute, owner-stated)
 **NEVER send a raw/direct/reverse-engineered API call to the car or Toyota's backend. EVERY car action is a
@@ -43,6 +50,19 @@ Status:
   `FcmRetry` lines in logcat are GMS backoff noise, not a diagnosis. `app_reported_success()` remains
   as the fallback when a push is missing. A watchdog should spot "the app logged success but no push
   arrived" and restart the app automatically.
+- 🆕 **VOICE PATH BUILT (2026-10-12, branch `feat/voice-dtmf-codes`) — NOT YET TESTED ON A REAL CALL.**
+  Call the number, key a 4-digit per-command code, the car acts; confirmation is a **tone**, never
+  speech (owner's requirement: a spoken "the vehicle is now unlocked" is a state disclosure). Built for
+  a speed-dial contact with comma pauses, so the prompt sits INSIDE the `<Gather>` for barge-in, and the
+  command runs on a background thread so hanging up on the first tone is normal and supported.
+  `/voice`, `/voice/code`, `/voice/confirm`, `/voice/wait`, `/voice/tone/<name>.wav` — all on the
+  existing tunnel and service. Only `start`/`lock`/`unlock` are reachable by phone.
+  **To go live:** set `VOICE_PUBLIC_URL` + `VOICE_CODES` in the VM's `server/.env`, point the number's
+  **voiceUrl** at `https://toyota.REDACTED-HOST.com/voice`, then make one real call and check two things:
+  (1) do inbound voice webhooks carry `X-TextGrid-Signature`? Their doc never says — if the log shows
+  *"no X-TextGrid-Signature header"*, set `VOICE_REQUIRE_SIGNATURE=0`. (2) how many commas the handset
+  needs. Verified offline end-to-end against the real endpoints (115 unit tests + a TestClient drive of
+  every branch with a stubbed car); the SMS path is unchanged and re-verified.
 - ⬜ **NEXT:** OTP re-auth relay (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` → alert + relay
   code); a watchdog (use `/health` + notification-shade); optional quick-button fast path (skip the modal
   for Lock/Unlock/Start).
@@ -136,8 +156,9 @@ scripts/device/  — Magisk boot module + CA install (CA is dev-only)
 scripts/host/    — rig-supervisor.sh (Linux/GCP: the `toyota-rig` service — boot emulator, unlock, spawn-gate),
                    supervisor.sh (Windows/dev equivalent), emulator boot, per-command taps, capture_screen
 scripts/deploy/  — remote_deploy.sh (runs on the VM; git pull + venv + restart ONLY the webhook service)
-server/          — FastAPI TextGrid webhook: verify sender → parse keyword → tap → read push → reply
-                   (app.py + textgrid_auth.py signature verify + toyota_control.py taps)
+server/          — FastAPI TextGrid webhooks: verify sender → parse keyword/code → tap → read push → reply
+                   (app.py + textgrid_auth.py signature verify + toyota_control.py taps
+                    + voice.py: the phone/DTMF path — code table, TwiML, synthesised tones, lockout)
   tests/         — offline unit tests (parsing/matching; no device needed)
 ```
 
