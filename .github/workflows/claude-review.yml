@@ -25,6 +25,9 @@ jobs:
 
     # Prompt + args shared verbatim by the primary and fallback attempts, so the two accounts can't drift.
     env:
+      # The `secrets` context is NOT available in a step-level `if:`, so the presence of the fallback
+      # token has to be hoisted into `env` here for the fallback step to be able to gate on it.
+      HAS_FALLBACK_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK != '' }}
       REVIEW_PROMPT: |
         REPO: ${{ github.repository }}
         PR NUMBER: ${{ github.event.pull_request.number }}
@@ -59,7 +62,7 @@ jobs:
 
       # Read/Grep/Glob let the reviewer verify claims against the whole repo instead of burning turns on
       # denied tool calls. Everything here is read-only: no Write/Edit, no shell that can mutate.
-      CLAUDE_ARGS: '--model claude-opus-4-8[1m] --allowed-tools "Read,Grep,Glob,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(grep:*),Bash(rg:*)"'
+      CLAUDE_ARGS: '--model claude-opus-5-5 --allowed-tools "Read,Grep,Glob,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(grep:*),Bash(rg:*)"'
 
     steps:
       - name: Checkout repository
@@ -84,14 +87,29 @@ jobs:
           claude_args: ${{ env.CLAUDE_ARGS }}
 
       # Fallback to a second subscription when the primary attempt fails. We fail over on ANY primary
-      # failure (review failures are overwhelmingly throttle/transient). If BOTH fail, this step (no
-      # continue-on-error) turns the job red. Inert until CLAUDE_CODE_OAUTH_TOKEN_FALLBACK exists — an
-      # empty token just fails like the primary, so merging ahead of the secret is harmless.
+      # failure (review failures are overwhelmingly throttle/transient).
+      #
+      # This step is SKIPPED unless CLAUDE_CODE_OAUTH_TOKEN_FALLBACK is actually set. It used to run
+      # unconditionally on the theory that "an empty token just fails like the primary, so merging
+      # ahead of the secret is harmless" — it is not. With no secret the action aborts with
+      # "Environment variable validation failed" before it ever contacts the API, and because this
+      # step has no continue-on-error that turned the job RED on every single PR, masking whether the
+      # review itself passed. (Observed on PR #3, 2026-10-11.)
       - name: Run Claude Code Review (fallback account)
-        if: steps.primary.outcome == 'failure'
+        id: fallback
+        if: steps.primary.outcome == 'failure' && env.HAS_FALLBACK_TOKEN == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           show_full_output: false
           prompt: ${{ env.REVIEW_PROMPT }}
           claude_args: ${{ env.CLAUDE_ARGS }}
+
+      # Gating the fallback means a primary-only failure would otherwise leave the job GREEN (the
+      # primary is continue-on-error). Keep "the review did not happen" visible.
+      - name: Fail if no review attempt succeeded
+        if: steps.primary.outcome == 'failure' && steps.fallback.outcome != 'success'
+        run: |
+          echo "::error::Claude review did not complete. primary=${{ steps.primary.outcome }} fallback=${{ steps.fallback.outcome }}"
+          echo "Note: show_full_output is false (this repo is public), so the reviewer's own error text is not in this log."
+          exit 1

@@ -57,7 +57,7 @@ Status:
   speech (owner's requirement: a spoken "the vehicle is now unlocked" is a state disclosure). Built for
   a speed-dial contact with comma pauses, so the prompt sits INSIDE the `<Gather>` for barge-in, and the
   command runs on a background thread so hanging up on the first tone is normal and supported.
-  `/voice`, `/voice/code`, `/voice/confirm`, `/voice/wait`, `/voice/tone/<name>.wav` — all on the
+  `/voice`, `/voice/code`, `/voice/wait`, `/voice/tone/<name>.wav` — all on the
   existing tunnel and service. Only `start`/`lock`/`unlock` are reachable by phone.
   **Already done on the rig:** branch checked out at `/opt/toyota-sms-remote`, `VOICE_PUBLIC_URL` +
   `VOICE_CODES` (6-digit, CSPRNG-generated) + `VOICE_REQUIRE_SIGNATURE=1` written to the VM's
@@ -69,7 +69,7 @@ Status:
   Their doc never says — if the journal shows *"no X-TextGrid-Signature header"*, set
   `VOICE_REQUIRE_SIGNATURE=0`. (2) does TextGrid's voice client / `<Play>` fetcher clear Cloudflare?
   (their SMS client does; see the error-1010 note in PRODUCTION.md). (3) how many commas the handset
-  needs. Offline: 115 unit tests + a TestClient drive of every branch with a stubbed car; the SMS path
+  needs. Offline: 119 unit tests + a TestClient drive of every branch with a stubbed car; the SMS path
   is unchanged and re-verified.
 - 🆕 **AUTO-LOCK-AND-RETRY (2026-10-12, both channels).** A START the car refuses as unsecured
   (`[D1]` / *"ensure the vehicle is secured"*) now locks the car and starts once more, instead of
