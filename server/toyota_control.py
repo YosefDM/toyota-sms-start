@@ -555,6 +555,9 @@ _RESULT_CODES: dict[str, re.Pattern[str]] = {
     "lock": re.compile(r"\[DL1\]"),
     "unlock": re.compile(r"\[DL0\]"),
     "start": re.compile(r"\[RES1\]"),
+    # [RES0] observed live 2026-10-11: "Remote Engine Stop Request was successful. [RES0]" — it is
+    # in the same RES family as start, so cataloguing it keeps the two from answering each other.
+    "shutoff": re.compile(r"\[RES0\]"),
     "hazards": re.compile(r"\[HZ1\]"),
 }
 
