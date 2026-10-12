@@ -260,6 +260,16 @@ class ResultScoping(unittest.TestCase):
         # ...but a LOCK confirmation plainly is not.
         self.assertTrue(tc._is_other_commands_result("The vehicle is now locked. [DL1]", "lights"))
 
+    def test_start_and_shutoff_do_not_answer_each_other(self):
+        # Both live in the RES family ([RES1] / [RES0], observed live), so a START must never be
+        # answered by the engine-stop push or vice versa.
+        start_push = "Vehicle was started and will automatically shut off in 10 minutes. [RES1]"
+        stop_push = "Remote Engine Stop Request was successful. [RES0]"
+        self.assertTrue(tc._is_other_commands_result(stop_push, "start"))
+        self.assertTrue(tc._is_other_commands_result(start_push, "shutoff"))
+        self.assertFalse(tc._is_other_commands_result(stop_push, "shutoff"))
+        self.assertFalse(tc._is_other_commands_result(start_push, "start"))
+
     def test_no_command_means_no_filtering(self):
         self.assertFalse(tc._is_other_commands_result("The vehicle is now locked. [DL1]", None))
 
