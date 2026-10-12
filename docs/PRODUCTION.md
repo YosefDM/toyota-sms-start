@@ -246,6 +246,34 @@ result code is. A tone can't hedge, so anything undecidable is `partial`, never 
 **`partial` right after a START is the signature of the FCM push outage** — see the FCM section;
 the fix is `adb shell am force-stop com.toyota.oneapp`.
 
+### Setting the number's voiceUrl WITHOUT the dashboard (verified 2026-10-12)
+TextGrid's Twilio-compatible number API works and takes either auth header (`Basic` *or* `Bearer`,
+both base64 of `sid:token`). The number's sid is URL-encoded — they are base64 and contain `==`.
+
+```bash
+cd /opt/toyota-sms-remote/server && set -a && . ./.env && set +a
+A="Authorization: Basic $(printf '%s:%s' "$TEXTGRID_ACCOUNT_SID" "$TEXTGRID_AUTH_TOKEN" | base64 -w0)"
+ENC=$(python3 -c "import urllib.parse,os;print(urllib.parse.quote(os.environ['TEXTGRID_ACCOUNT_SID'],safe=''))")
+# list numbers (find the one you want, note its sid), then:
+curl -sS -X POST -H "$A" --data-urlencode "VoiceUrl=$VOICE_PUBLIC_URL" \
+  --data-urlencode "VoiceMethod=POST" \
+  "https://api.textgrid.com/2010-04-01/Accounts/$ENC/IncomingPhoneNumbers/<url-encoded-number-sid>.json"
+```
+Twilio-style **form** params (`VoiceUrl`, `VoiceMethod`) work, despite their doc saying POSTs must be
+JSON; a JSON body with `voiceUrl` is accepted too. Verify with a plain `GET` of the same URL — a
+number that has never had voice configured simply omits `voice_url` from its record rather than
+returning it empty.
+
+### ⚠️ Cloudflare error 1010 will waste an hour if you don't know about it
+Probing the public webhook with **python-urllib gets a blanket HTTP 403 whose body is
+`error code: 1010`** — Cloudflare blocking the client's fingerprint. It never reaches uvicorn, so
+the journal shows nothing and it looks exactly like a signature rejection. **Use `curl`** (which
+passes) for any manual probe of `https://<tunnel-host>/...`.
+
+This also means a live call is the only way to know whether **TextGrid's own voice HTTP client and
+its `<Play>` media fetcher** get through Cloudflare. Their *SMS* webhook client demonstrably does.
+If a call connects but nothing is spoken and the journal is empty, this is the first suspect.
+
 ### Tuning the speed dial
 `,` ≈ 2s per handset; the digits must land after the call is answered *and* after the gather opens
 (~1-2s after answer), but within `VOICE_GATHER_TIMEOUT` (10s). Start at five commas, then listen:

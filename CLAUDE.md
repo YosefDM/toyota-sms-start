@@ -52,19 +52,25 @@ Status:
   `FcmRetry` lines in logcat are GMS backoff noise, not a diagnosis. `app_reported_success()` remains
   as the fallback when a push is missing. A watchdog should spot "the app logged success but no push
   arrived" and restart the app automatically.
-- 🆕 **VOICE PATH BUILT (2026-10-12, branch `feat/voice-dtmf-codes`) — NOT YET TESTED ON A REAL CALL.**
+- 🆕 **VOICE PATH DEPLOYED & CONFIGURED (2026-10-12, PR #5) — AWAITING ONE REAL CALL.**
   Call the number, key a 4-digit per-command code, the car acts; confirmation is a **tone**, never
   speech (owner's requirement: a spoken "the vehicle is now unlocked" is a state disclosure). Built for
   a speed-dial contact with comma pauses, so the prompt sits INSIDE the `<Gather>` for barge-in, and the
   command runs on a background thread so hanging up on the first tone is normal and supported.
   `/voice`, `/voice/code`, `/voice/confirm`, `/voice/wait`, `/voice/tone/<name>.wav` — all on the
   existing tunnel and service. Only `start`/`lock`/`unlock` are reachable by phone.
-  **To go live:** set `VOICE_PUBLIC_URL` + `VOICE_CODES` in the VM's `server/.env`, point the number's
-  **voiceUrl** at `https://<tunnel-host>/voice`, then make one real call and check two things:
-  (1) do inbound voice webhooks carry `X-TextGrid-Signature`? Their doc never says — if the log shows
-  *"no X-TextGrid-Signature header"*, set `VOICE_REQUIRE_SIGNATURE=0`. (2) how many commas the handset
-  needs. Verified offline end-to-end against the real endpoints (115 unit tests + a TestClient drive of
-  every branch with a stubbed car); the SMS path is unchanged and re-verified.
+  **Already done on the rig:** branch checked out at `/opt/toyota-sms-remote`, `VOICE_PUBLIC_URL` +
+  `VOICE_CODES` (6-digit, CSPRNG-generated) + `VOICE_REQUIRE_SIGNATURE=1` written to the VM's
+  `server/.env` (a timestamped `.bak` sits beside it), `toyota-sms` restarted, and the number's
+  **voiceUrl** set to `<tunnel-host>/voice` via the Twilio-compatible API (see PRODUCTION.md — no
+  dashboard needed). Verified live through the real tunnel: signature accept/reject, the caller
+  allowlist, the wrong-code buzz + re-gather, and the tone media (`audio/wav`, 200).
+  **What only a real call can answer:** (1) do inbound voice webhooks carry `X-TextGrid-Signature`?
+  Their doc never says — if the journal shows *"no X-TextGrid-Signature header"*, set
+  `VOICE_REQUIRE_SIGNATURE=0`. (2) does TextGrid's voice client / `<Play>` fetcher clear Cloudflare?
+  (their SMS client does; see the error-1010 note in PRODUCTION.md). (3) how many commas the handset
+  needs. Offline: 115 unit tests + a TestClient drive of every branch with a stubbed car; the SMS path
+  is unchanged and re-verified.
 - ⬜ **NEXT:** OTP re-auth relay (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` → alert + relay
   code); a watchdog (use `/health` + notification-shade); optional quick-button fast path (skip the modal
   for Lock/Unlock/Start).
@@ -75,7 +81,7 @@ Full live state + the exact resume checklist is in memory `toyota-gcp-rig-state`
 
 ## The rig (GCP) — how to reconnect
 
-- **VM:** `toyota-rig`, zone `northamerica-northeast1-a`, **n2-standard-4** (Intel; nested virt is
+- **VM:** `toyota-rig`, zone `northamerica-northeast1-a`, **n2-standard-8** as of 2026-10-12 (was -4; Intel — nested virt is
   **Intel-only** on GCP — never n2d/AMD). External IP is ephemeral. *(GCP project ID, gcloud account, device
   PIN, and VNC password are kept in the private memory `toyota-gcp-rig-state` — NOT in this public repo.)*
 - **The dev PC is behind the Techloq TLS-MITM filter**, so to drive gcloud/SSH:
