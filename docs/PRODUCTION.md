@@ -184,7 +184,7 @@ The app's authoritative success/failure signal is a **push notification** from T
 ## Voice bridge — phone call + DTMF code (built — `server/voice.py`)
 
 The second control channel, for the gesture SMS can't match: **one speed-dial keypress**. The owner
-stores the number with the code behind comma pauses (`+1845…,,,,,4821`), presses it on waking, and
+stores the number with the code behind comma pauses (`+1845…,,4821`), presses it on waking, and
 the engine starts. Same emulator, same taps, same hard rule.
 
 ### Wiring
@@ -220,7 +220,7 @@ Twilio-compatible in shape, a strict subset in practice. The three limits that s
    short-circuit, no timing side channel on a 4-digit secret). Wrong ⇒ buzz + re-gather, and the
    failure is counted **across calls**; 5 within 15 min locks the caller out for 15 min.
 3. `unlock` still goes through `CONFIRM_REQUIRED` — a second keypress (`press 1`), which a dial
-   string can also carry: `…,,,,,5566,,1`.
+   string can also carry: `…,,5566,,1`.
 4. Dispatch claims the one UI lock (shared with SMS — one car, one screen), starts the tap on a
    background thread, plays `accepted`, and parks the call in a silent `<Pause>`/`<Redirect>` loop.
 5. `POST /voice/wait` plays the verdict tone the moment there is one, or gives up after
@@ -275,10 +275,21 @@ its `<Play>` media fetcher** get through Cloudflare. Their *SMS* webhook client 
 If a call connects but nothing is spoken and the journal is empty, this is the first suspect.
 
 ### Tuning the speed dial
-`,` ≈ 2s per handset; the digits must land after the call is answered *and* after the gather opens
-(~1-2s after answer), but within `VOICE_GATHER_TIMEOUT` (10s). Start at five commas, then listen:
-nothing at all ⇒ too few (they were sent before anyone was listening); add one. `VOICE_FIRST_PAUSE`
-(8s) and `VOICE_LOOP_PAUSE` (5s) set how often the hold loop checks back.
+**The handset starts counting its commas when the call is ANSWERED, not when it starts dialling**, so
+there is no ring time to budget for — only the ~1-2s for TextGrid to fetch the TwiML and open the
+`<Gather>`. That makes the pause much shorter than it first looks: **two commas** is the right
+starting point, not five.
+
+A comma is 2s on most handsets and 3s on some, and you cannot subdivide it, so two of them land at
+4-6s — safely after the gather opens and far inside `VOICE_GATHER_TIMEOUT` (10s). Then listen:
+
+- **no tone at all** ⇒ sent too early, before anything was listening. Add a comma.
+- **the low reject buzz** ⇒ the digits arrived partial or garbled. Add a comma.
+- **two rising beeps** ⇒ right.
+
+If a handset ever needs more than ~3 commas, raise `VOICE_GATHER_TIMEOUT` rather than stacking
+commas against a deadline. `VOICE_FIRST_PAUSE` (8s) and `VOICE_LOOP_PAUSE` (5s) are unrelated —
+they set how often the hold loop checks back.
 
 ### Only three commands by phone
 `start`, `lock`, `unlock` — enforced by `VOICE_ALLOWED_COMMANDS`, with a test that fails if the

@@ -459,7 +459,7 @@ async def sms(request: Request):
 
 # ==================================================================== voice (phone-call) path
 # Designed around ONE primary gesture: a speed-dial contact whose number carries the code after a
-# pause string — `+15550001234,,,,,4821`. The owner presses one key on a basic phone, the handset
+# pause string — `+15550001234,,4821`. The owner presses one key on a basic phone, the handset
 # dials, waits out the commas, autosends the DTMF, and the engine starts. Four consequences shape
 # the code below:
 #   1. The digits can land WHILE the greeting is still playing, so the prompt lives INSIDE the
@@ -630,7 +630,7 @@ async def voice_code(request: Request):
     _voice_throttle.record_success(caller)
 
     # Car-opening commands keep their confirmation step on this channel too — it is just a second
-    # keypress instead of the word YES. A speed-dial string can carry it: `…,,,,,5566,,1`.
+    # keypress instead of the word YES. A speed-dial string can carry it: `…,,5566,,1`.
     if command in tc.CONFIRM_REQUIRED:
         now = time.time()
         # Sweep first: a caller who hears the confirm prompt and just hangs up leaves an entry

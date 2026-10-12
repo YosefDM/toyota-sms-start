@@ -10,7 +10,7 @@ Control a **2025 Toyota Camry** from a basic (non-smart) phone, over two channel
 - **SMS** — text keywords (`TOYOTA START`, `LOCK`, `UNLOCK`, `HAZARDS`, …) to a TextGrid number and read
   the car's own confirmation back.
 - **Phone call** — CALL the same number and key a per-command secret code. Built for a **speed dial**
-  (`+1845…,,,,,4821`): one keypress on waking starts the car. The call answers in **tones, not words** —
+  (`+1845…,,4821`): one keypress on waking starts the car. The call answers in **tones, not words** —
   nothing about the car is ever spoken aloud. See `server/voice.py` and `docs/PRODUCTION.md`.
 
 Either way an always-on server taps the matching button in the **official Toyota OneApp** running inside a

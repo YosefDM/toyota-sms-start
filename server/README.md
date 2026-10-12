@@ -44,16 +44,18 @@ The point of this path is **one keypress in the morning**. Store the number in y
 code appended after comma pauses, put that contact on a speed dial, and pressing it starts the car:
 
 ```
-+15550001234,,,,,4821
++15550001234,,4821
 ```
 
-Each `,` is a pause (≈2s on most handsets) before the digits are autosent as DTMF. You want the
-digits to land *after* the call is answered — if they arrive too early they're lost, so add a comma
-and try again. The prompt is played *inside* the `<Gather>` precisely so an early-but-not-too-early
+Each `,` is a pause before the digits are autosent as DTMF, and the handset starts counting them
+**when the call is answered**, not when it starts dialling — so there's no ringing to wait out, only
+the ~1-2s for the `<Gather>` to open. Two commas (4-6s, since a comma is 2s on most handsets and 3s
+on some) is the right starting point. If no tone comes back at all, the digits went out before
+anything was listening: add one. The prompt is played *inside* the `<Gather>` precisely so an early-but-not-too-early
 code keyed over the greeting is still heard. `;` (wait for me) works on some phones if you'd rather
 press send yourself.
 
-`UNLOCK` needs its confirm keypress, which a dial string can also carry: `+1845…,,,,,5566,,1`.
+`UNLOCK` needs its confirm keypress, which a dial string can also carry: `+1845…,,5566,,1`.
 
 ### The call answers in tones, not words
 

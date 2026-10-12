@@ -2,7 +2,7 @@
 
 **Control a car by text message — or by one keypress.** Send `TOYOTA START` to a phone number and the
 engine starts; or put that number on a **speed dial** with your code behind a comma pause
-(`+1555…,,,,,4821`), press it once on waking, and the car starts before you're out of bed. No smartphone
+(`+1555…,,4821`), press it once on waking, and the car starts before you're out of bed. No smartphone
 required. Lock, unlock, lights, hazards, and more, all from any basic phone.
 
 > ✅ **Proven end-to-end:** a text-triggered action drives the real Toyota app and the command reaches the
