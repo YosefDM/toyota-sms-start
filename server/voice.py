@@ -16,6 +16,7 @@ state disclosure the owner explicitly doesn't want. So:
   - `partial`  — the app accepted it but no confirmation came back (e.g. FCM down) — unknown
   - `failed`   — the car or the app refused it
   - `reject`   — that code isn't recognised
+  - `retrying` — the car refused the start as unsecured; locking it and trying once more
 
 The owner only has to learn the first two. Speech survives only for things that say nothing about
 the car: "not authorized", "not configured", a lockout. Every tone is synthesised here at import
@@ -156,6 +157,11 @@ TONE_SPECS: dict[str, tuple[tuple[int, int], ...]] = {
     "failed": ((440, 180), (294, 260)),
     # that code isn't recognised — one low buzz, nothing cheerful about it
     "reject": ((196, 500),),
+    # the start was refused because the car wasn't secured, so we are locking it and trying again:
+    # up-then-down in the middle register, so it reads as "hold on, working" rather than a verdict.
+    # Distinct in CONTOUR from every tone above, not just in pitch — a verdict tone and a progress
+    # tone must never be confusable by someone half awake.
+    "retrying": ((587, 110), (784, 110), (587, 150)),
 }
 GAP_MS = 60
 
@@ -334,7 +340,8 @@ class Jobs:
         with self._lock:
             self._sweep(now)
             self._jobs[call_sid] = {"command": command, "created": now,
-                                    "outcome": None, "text": ""}
+                                    "outcome": None, "text": "",
+                                    "stage": "", "stage_played": False}
 
     def finish(self, call_sid: str, outcome: str, text: str) -> None:
         """Record the verdict — one of the result tone names — plus the text, for the log."""
@@ -342,6 +349,19 @@ class Jobs:
             job = self._jobs.get(call_sid)
             if job is not None:
                 job["outcome"], job["text"] = outcome, text
+
+    def set_stage(self, call_sid: str, stage: str) -> None:
+        """Note mid-flight progress (currently only "retrying") for the hold loop to sound once."""
+        with self._lock:
+            job = self._jobs.get(call_sid)
+            if job is not None and job["stage"] != stage:
+                job["stage"], job["stage_played"] = stage, False
+
+    def mark_stage_played(self, call_sid: str) -> None:
+        with self._lock:
+            job = self._jobs.get(call_sid)
+            if job is not None:
+                job["stage_played"] = True
 
     def get(self, call_sid: str) -> dict | None:
         with self._lock:

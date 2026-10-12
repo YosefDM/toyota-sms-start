@@ -151,6 +151,7 @@ server/           — the TextGrid webhooks: verify sender → read keyword or k
 | Real success/failure feedback from the app's push notification | ✅ built |
 | TextGrid SMS bridge (sender allowlist, confirmation, replies, signature verify) | ✅ **live** — text → car, verified end-to-end |
 | Voice bridge — call + DTMF code, built for a speed dial, tone-only confirmation | 🆕 built — verified offline end-to-end; awaiting its first live call |
+| Auto-recovery: a start the car refuses as "not secured" is locked and retried once | 🆕 built — both channels |
 | CI + automated Claude PR review + deploy-to-rig on merge | ✅ built — `.github/workflows/` |
 | Auto-start / reboot-survivable production setup | ✅ done — whole rig comes up untended on VM reboot |
 

@@ -244,6 +244,7 @@ fetcher pulls, and there is no information in a beep):
 | `partial` | two flat | sent, outcome **unknown** | no push, or only the app's own success event |
 | `failed` | two falling | refused, or never sent | `ControlError` / a push with another result code |
 | `reject` | one low buzz | code not recognised | — |
+| `retrying` | three mid, up-down | refused as unsecured; locking and retrying | `tc.refused_as_unsecured()` on the push |
 
 `tc.result_is_success()` is what separates `done` from `failed`: Toyota pushes refusals down the
 same channel ("…keyfob was detected [70]"), so the *arrival* of a push is not an outcome — only its
@@ -278,6 +279,30 @@ passes) for any manual probe of `https://<tunnel-host>/...`.
 This also means a live call is the only way to know whether **TextGrid's own voice HTTP client and
 its `<Play>` media fetcher** get through Cloudflare. Their *SMS* webhook client demonstrably does.
 If a call connects but nothing is spoken and the journal is empty, this is the first suspect.
+
+### Auto-lock-and-retry on an unsecured start (both channels)
+A remote start the car refuses because it isn't secured is the one failure the owner can fix from a
+basic phone — by sending LOCK and then START again, two messages and a minute, usually standing in
+the cold. So `_command_reply` does it for them: on that refusal it locks the car and starts once
+more.
+
+- **The trigger** is `tc.refused_as_unsecured()`, which matches `[D1]` or the wording *"ensure the
+  vehicle is secured"* (observed live, see UI-MAP). It is deliberately narrow and must stay that
+  way: a keyfob left in the cabin (`[70]`) is also a start refusal, and locking the car does
+  nothing about it, so retrying would just burn a minute and refuse again.
+- **One retry, never a loop.** `[D1]` is a shared "not secured" code that also covers an open
+  window or an ajar trunk, so a lock is a good guess, not a guarantee. If the second start is
+  refused the same way, the reply says the lock didn't help and names those causes.
+- **If the lock itself doesn't confirm**, it stops there and says so rather than starting a car it
+  could not secure.
+- **The UI claim is refreshed between legs** (`_touch_ui`). Three commands back to back run ~100s,
+  and without the refresh `_claim_ui` would decide a perfectly healthy worker was wedged partway
+  through its own sequence and let a second command onto the same screen. This is why the claim
+  token is now a counter rather than the held-since timestamp.
+- **On the phone**, the hold loop plays the `retrying` tone once and then extends its patience to
+  `VOICE_RETRY_HOLD_SECONDS` (150s). Without that it would hang up with `partial` on a start that
+  was about to succeed — the most misleading thing this path could do.
+- Switch the whole behaviour off with `AUTO_LOCK_RETRY=0`.
 
 ### Tuning the speed dial
 **The handset starts counting its commas when the call is ANSWERED, not when it starts dialling**, so

@@ -81,6 +81,11 @@ CONFIRM_WINDOW_SECONDS = int(os.environ.get("CONFIRM_WINDOW_SECONDS", "120"))
 # from locking the car out for good.
 UI_CLAIM_TIMEOUT = int(os.environ.get("UI_CLAIM_TIMEOUT", "180"))
 
+# A remote start the car refuses because it isn't secured is the one failure we can fix without the
+# owner: lock it, start it again. Costs ~60s more on the one command that failed, and only ever
+# runs once. Set to 0 to report the refusal and do nothing instead.
+AUTO_LOCK_RETRY = os.environ.get("AUTO_LOCK_RETRY", "1").strip().lower() not in ("0", "false", "no")
+
 # --- Voice (phone-call) path ---------------------------------------------------------------
 # The exact voiceUrl configured on the TextGrid number. The <Gather>/<Redirect> URLs we hand back
 # are built from it, and each is signature-verified against the URL it was requested at, so this
@@ -95,6 +100,10 @@ VOICE_REQUIRE_SIGNATURE = os.environ.get("VOICE_REQUIRE_SIGNATURE", "1").strip()
 # How long the caller is parked in the say/pause/redirect hold loop before we give up on Toyota's
 # push. Slightly longer than RESULT_TIMEOUT so the loop outlives the thing it is waiting for.
 VOICE_HOLD_SECONDS = int(os.environ.get("VOICE_HOLD_SECONDS", "45"))
+# An auto-lock-and-retry is three commands back to back (~100s), so the hold loop needs a much
+# longer rope once one is under way — otherwise it would hang up with `partial` on a start that is
+# about to succeed, which is the single most misleading thing this path could do.
+VOICE_RETRY_HOLD_SECONDS = int(os.environ.get("VOICE_RETRY_HOLD_SECONDS", "150"))
 # Generous: with a speed-dial pause string the handset may still be counting commas when the
 # gather opens, and a human on a keypad is slower than this prompt is short.
 VOICE_GATHER_TIMEOUT = int(os.environ.get("VOICE_GATHER_TIMEOUT", "10"))
@@ -122,35 +131,56 @@ _voice_jobs = v.Jobs()
 _last_cmd_at: dict[str, float] = {}
 _pending_confirm: dict[str, tuple[str, float]] = {}
 _ui_lock = threading.Lock()
-_ui_busy_since: float | None = None
+_ui_holder: int | None = None        # token of the live claim, or None when the screen is free
+_ui_busy_since: float | None = None  # when that claim was taken or last refreshed
+_ui_token_seq = 0
 
 
-def _claim_ui() -> float | None:
+def _claim_ui() -> int | None:
     """Take the exclusive right to drive the app's UI.
 
     Returns a token to hand back to `_release_ui`, or None if another worker still holds the claim.
     The token matters: when a claim is STOLEN from a wedged worker, that worker may still finish
     later, and a token-less release would clear the *new* holder's claim — letting a third command
     drive the screen alongside it, which is the exact overlap this lock exists to prevent.
+
+    The token is a counter and NOT the held-since timestamp (which it used to be), so that
+    `_touch_ui` can push the staleness clock forward without changing the holder's identity. The
+    auto-lock-and-retry sequence is what needs that: three commands back to back can run ~100s,
+    and a claim that cannot be refreshed would start looking wedged partway through its own work.
+    """
+    global _ui_holder, _ui_busy_since, _ui_token_seq
+    with _ui_lock:
+        now = time.time()
+        if _ui_holder is not None and now - (_ui_busy_since or 0) < UI_CLAIM_TIMEOUT:
+            return None
+        if _ui_holder is not None:
+            logger.warning("stealing a UI claim held %.0fs — previous worker looks wedged",
+                           now - (_ui_busy_since or now))
+        _ui_token_seq += 1
+        _ui_holder, _ui_busy_since = _ui_token_seq, now
+        return _ui_holder
+
+
+def _touch_ui(token: int | None) -> None:
+    """Say "still working" — resets the staleness clock without releasing the claim.
+
+    Called between the legs of a multi-command sequence. Without it, a legitimately long but
+    perfectly healthy worker becomes stealable mid-sequence and a second command can start driving
+    the same screen.
     """
     global _ui_busy_since
     with _ui_lock:
-        now = time.time()
-        if _ui_busy_since is not None and now - _ui_busy_since < UI_CLAIM_TIMEOUT:
-            return None
-        if _ui_busy_since is not None:
-            logger.warning("stealing a UI claim held %.0fs — previous worker looks wedged",
-                           now - _ui_busy_since)
-        _ui_busy_since = now
-        return now
+        if token is not None and _ui_holder == token:
+            _ui_busy_since = time.time()
 
 
-def _release_ui(token: float | None) -> None:
+def _release_ui(token: int | None) -> None:
     """Release the claim only if `token` is still the live one (see `_claim_ui`)."""
-    global _ui_busy_since
+    global _ui_holder, _ui_busy_since
     with _ui_lock:
-        if token is not None and _ui_busy_since == token:
-            _ui_busy_since = None
+        if token is not None and _ui_holder == token:
+            _ui_holder, _ui_busy_since = None, None
 
 
 def _twiml(text: str) -> Response:
@@ -288,7 +318,7 @@ def _run_bg(fn, *args) -> None:
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
-def _do_status(to: str, token: float | None = None) -> None:
+def _do_status(to: str, token: int | None = None) -> None:
     try:
         reply = tc.format_status(tc.read_status())
     except tc.NotLoggedIn:
@@ -303,64 +333,114 @@ def _do_status(to: str, token: float | None = None) -> None:
     deliver(to, reply)
 
 
-def _command_reply(command: str, token: float | None = None) -> tuple[str, str]:
+def _attempt(command: str) -> tuple[str, str, str]:
+    """Run ONE command to its verdict: ``(sentence, outcome, push_text)``.
+
+    `outcome` is ``"done"`` (the car confirmed it), ``"failed"`` (refused, or never went out) or
+    ``"partial"`` (it went out and we genuinely do not know — e.g. the FCM push never arrived).
+    Only the three are distinguished, because a tone cannot hedge and guessing "done" from silence
+    would be a lie about a car. `push_text` is Toyota's own wording when a push arrived and "" when
+    none did, so a caller can ask *why* it failed without re-parsing the sentence.
+
+    Holds no lock and releases nothing — `_command_reply` owns the UI claim across however many
+    attempts it makes.
+    """
+    pretty = command.replace("_", " ")
+    try:
+        since_ms = tc.execute(command)
+    except tc.NotLoggedIn:
+        return ("The car app is signed out and needs re-authentication before I can send "
+                "commands. The operator has been alerted."), "failed", ""
+    except tc.CommandNotApplicable as e:
+        return str(e), "failed", ""  # already a complete sentence for the owner
+    except tc.ControlError as e:
+        return f"Couldn't send {pretty}: {e}", "failed", ""
+    except Exception as e:
+        logger.exception("command failed")
+        return f"{pretty} failed: {e}", "failed", ""
+
+    try:
+        result = tc.await_result(since_ms, command=command)
+    except Exception:
+        logger.exception("reading the result notification failed")
+        result = None
+
+    if result and result.get("text"):
+        push = result["text"]
+        # The push is the car's own word, but it carries refusals too ("...keyfob was detected
+        # [70]"), so the verdict is its result CODE, not its arrival.
+        verdict = tc.result_is_success(command, push)
+        return push, ("partial" if verdict is None else ("done" if verdict else "failed")), push
+    if tc.app_reported_success(command, since_ms):
+        # The app's event means TOYOTA ACCEPTED the request, not that the car acted — a car-side
+        # refusal ("keyfob was detected [70]") only ever arrives on the push that is, by
+        # definition, missing here. Don't promise more than acceptance.
+        return (f"{pretty.capitalize()} was accepted by the Toyota app, but the car's own "
+                f"confirmation didn't arrive — I can't confirm the car actually did it."), "partial", ""
+    return (f"Sent '{pretty}' to the car. No confirmation came back within "
+            f"{tc.RESULT_TIMEOUT}s — it may still be completing."), "partial", ""
+
+
+def _command_reply(command: str, token: int | None = None,
+                   on_stage=None) -> tuple[str, str]:
     """Drive the car and return ``(sentence, outcome)``, releasing the UI claim first.
 
     Shared by both channels: the SMS worker texts the sentence, the voice worker plays a tone for
-    the outcome (it must never say the car's state out loud). `outcome` is one of
-    ``"done"`` (the car confirmed it), ``"failed"`` (it was refused, or never went out) or
-    ``"partial"`` (it went out and we genuinely do not know — e.g. the FCM push never arrived).
-    Only the three are distinguished, because a tone cannot hedge and guessing "done" from
-    silence would be a lie about a car.
+    the outcome (it must never say the car's state out loud).
+
+    **Auto-lock-and-retry.** A remote start that the car refuses because it isn't secured is a
+    failure the owner can do nothing about from a basic phone except send LOCK and then START
+    again — two messages and a minute, usually in a driveway in the cold. So we do it for them:
+    on that specific refusal we lock the car and start ONCE more. `on_stage("retrying")`, when
+    given, lets the voice path tell the caller why the call is suddenly taking longer.
+
+    It is one retry, never a loop, and it is honest about what it did: "secured" covers an open
+    window or an ajar trunk as well as unlocked doors, so a lock is a good guess and not a
+    guarantee. If the second start is refused the same way, the reply says the lock didn't help
+    and names the likely cause.
 
     Everything slow happens BEFORE the claim is released, and nothing about *delivery* happens
     here — `deliver` spends up to ~16s confirming the SMS went out, which must not keep the next
     command waiting on the screen.
     """
-    pretty = command.replace("_", " ")
-    outcome = "failed"
     try:
-        try:
-            since_ms = tc.execute(command)
-        except tc.NotLoggedIn:
-            reply = ("The car app is signed out and needs re-authentication before I can send "
-                     "commands. The operator has been alerted.")
-        except tc.CommandNotApplicable as e:
-            reply = str(e)  # already a complete sentence for the owner
-        except tc.ControlError as e:
-            reply = f"Couldn't send {pretty}: {e}"
-        except Exception as e:
-            logger.exception("command failed")
-            reply = f"{pretty} failed: {e}"
-        else:
-            try:
-                result = tc.await_result(since_ms, command=command)
-            except Exception:
-                logger.exception("reading the result notification failed")
-                result = None
-            if result and result.get("text"):
-                reply = result["text"]
-                # The push is the car's own word, but it carries refusals too ("...keyfob was
-                # detected [70]"), so the verdict is its result CODE, not its arrival.
-                verdict = tc.result_is_success(command, reply)
-                outcome = "partial" if verdict is None else ("done" if verdict else "failed")
-            elif tc.app_reported_success(command, since_ms):
-                # The app's event means TOYOTA ACCEPTED the request, not that the car acted — a
-                # car-side refusal ("keyfob was detected [70]") only ever arrives on the push that
-                # is, by definition, missing here. Don't promise more than acceptance.
-                reply = (f"{pretty.capitalize()} was accepted by the Toyota app, but the car's own "
-                         f"confirmation didn't arrive — I can't confirm the car actually did it.")
-                outcome = "partial"
-            else:
-                reply = (f"Sent '{pretty}' to the car. No confirmation came back within "
-                         f"{tc.RESULT_TIMEOUT}s — it may still be completing.")
-                outcome = "partial"
+        reply, outcome, push = _attempt(command)
+
+        if not (command == "start" and outcome == "failed"
+                and AUTO_LOCK_RETRY and tc.refused_as_unsecured(push)):
+            return reply, outcome
+
+        logger.info("start refused as unsecured (%r) — locking and retrying once", push[:90])
+        if on_stage:
+            on_stage("retrying")
+        # Refresh the claim between legs: this sequence is three commands and can run ~100s, which
+        # would otherwise start looking wedged to `_claim_ui` partway through its own work.
+        _touch_ui(token)
+
+        lock_reply, lock_outcome, _ = _attempt("lock")
+        if lock_outcome != "done":
+            return (f"The car refused the remote start because it isn't secured, so I tried to "
+                    f"lock it first, but the lock didn't confirm either: {lock_reply}"), "failed"
+
+        _touch_ui(token)
+        retry_reply, retry_outcome, retry_push = _attempt("start")
+
+        if retry_outcome == "done":
+            return f"The car wasn't locked, so I locked it and started it: {retry_reply}", "done"
+        if tc.refused_as_unsecured(retry_push):
+            # Locking was the one thing we could fix; "secured" means more than the doors.
+            # ASCII only, deliberately: one em-dash in an SMS forces the whole message to UCS-2,
+            # which cuts a segment from 160 characters to 70 — and this is the longest reply here.
+            return (f"I locked the car and tried the start again, but it still says the vehicle "
+                    f"isn't secured. Check for an open window, the trunk, or a door that didn't "
+                    f"latch: {retry_reply}"), "failed"
+        return (f"The car wasn't locked, so I locked it and tried the start again: "
+                f"{retry_reply}"), retry_outcome
     finally:
         _release_ui(token)
-    return reply, outcome
 
 
-def _do_command(to: str, command: str, token: float | None = None) -> None:
+def _do_command(to: str, command: str, token: int | None = None) -> None:
     """SMS worker: drive the car, then text the result."""
     deliver(to, _command_reply(command, token)[0])
 
@@ -565,9 +645,10 @@ def _voice_dispatch(call_sid: str, caller: str, command: str) -> str:
                   pause=VOICE_FIRST_PAUSE)
 
 
-def _do_voice_command(call_sid: str, command: str, token: float | None = None) -> None:
+def _do_voice_command(call_sid: str, command: str, token: int | None = None) -> None:
     """Voice worker: drive the car, then file the verdict for the hold loop to sound out."""
-    reply, outcome = _command_reply(command, token)
+    reply, outcome = _command_reply(
+        command, token, on_stage=lambda stage: _voice_jobs.set_stage(call_sid, stage))
     # The sentence never reaches the caller on this channel, so the log is the only place it is
     # written down — without it a tone-only call would be undiagnosable after the fact.
     logger.info("voice: %s for call %s -> %s | %s", command, call_sid[-6:] or "?", outcome, reply)
@@ -667,12 +748,21 @@ async def voice_wait(request: Request):
         _voice_jobs.drop(call_sid)
         return _tone(job["outcome"])
 
-    if time.time() - job["created"] > VOICE_HOLD_SECONDS:
+    # An auto-lock-and-retry turns one command into three, so the call has to be told why it is
+    # suddenly taking a minute — otherwise the only honest thing left is the `partial` tone, on a
+    # start that is very probably about to succeed.
+    if job["stage"] == "retrying" and not job["stage_played"]:
+        _voice_jobs.mark_stage_played(call_sid)
+        return _xml(v.hold(v.tone_frag("retrying", VOICE_PUBLIC_URL), _voice_url("/wait"),
+                           pause=VOICE_LOOP_PAUSE))
+
+    limit = VOICE_RETRY_HOLD_SECONDS if job["stage"] == "retrying" else VOICE_HOLD_SECONDS
+    if time.time() - job["created"] > limit:
         _voice_jobs.drop(call_sid)
         # The command itself is NOT abandoned — the worker is still running and its outcome still
         # reaches the log; only the readback gives up, so this is `partial`, never `failed`.
-        logger.info("voice: hold loop gave up on %s for call %s after %ds",
-                    job["command"], call_sid[-6:] or "?", VOICE_HOLD_SECONDS)
+        logger.info("voice: hold loop gave up on %s for call %s after %ds (stage=%r)",
+                    job["command"], call_sid[-6:] or "?", limit, job["stage"])
         return _tone("partial")
 
     return _xml(v.hold(None, _voice_url("/wait"), pause=VOICE_LOOP_PAUSE))

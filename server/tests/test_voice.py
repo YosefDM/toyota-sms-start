@@ -195,8 +195,9 @@ class TwiML(unittest.TestCase):
 
 
 class Tones(unittest.TestCase):
-    def test_all_five_outcomes_have_a_tone(self):
-        self.assertEqual(set(v.TONES), {"accepted", "done", "partial", "failed", "reject"})
+    def test_every_outcome_has_a_tone(self):
+        self.assertEqual(set(v.TONES),
+                         {"accepted", "done", "partial", "failed", "reject", "retrying"})
 
     def test_each_is_a_playable_8k_mono_wav(self):
         for name, data in v.TONES.items():
@@ -223,6 +224,26 @@ class Tones(unittest.TestCase):
                    for i in range(0, len(frames), 2))
         self.assertLess(peak, 32767)
         self.assertGreater(peak, 8000)  # ...but still audible
+
+
+class UnsecuredRefusal(unittest.TestCase):
+    """The signal the auto-lock-and-retry hangs off (observed live: "…vehicle is secured… [D1]")."""
+
+    def test_matches_the_observed_refusal(self):
+        for text in ("Remote command failed - ensure the vehicle is secured. [D1]",
+                     "Remote command failed — ensure the vehicle is secured… [D1]",
+                     "The vehicle is not secured.",
+                     "ENSURE THE VEHICLE IS SECURED"):
+            self.assertTrue(tc.refused_as_unsecured(text), text)
+
+    def test_does_not_match_other_refusals(self):
+        # Locking the car does nothing about a keyfob left inside, and retrying would just refuse
+        # again — so this must stay narrow or the retry fires on failures it cannot fix.
+        for text in ("Remote start failed because a keyfob was detected in the vehicle. [70]",
+                     "Vehicle was started and will automatically shut off in 10 minutes. [RES1]",
+                     "The vehicle is now locked. [DL1]",
+                     ""):
+            self.assertFalse(tc.refused_as_unsecured(text), text)
 
 
 class ThrottleTests(unittest.TestCase):
@@ -282,6 +303,24 @@ class JobsTests(unittest.TestCase):
     def test_finishing_an_unknown_call_is_a_no_op(self):
         # The owner can hang up before the worker finishes; the TTL may already have swept it.
         v.Jobs().finish("gone", "done", "text")  # must not raise
+
+    def test_stage_is_recorded_and_sounds_only_once(self):
+        jobs = v.Jobs()
+        jobs.start("CA1", "start")
+        self.assertEqual(jobs.get("CA1")["stage"], "")
+        jobs.set_stage("CA1", "retrying")
+        self.assertEqual(jobs.get("CA1")["stage"], "retrying")
+        self.assertFalse(jobs.get("CA1")["stage_played"])
+        jobs.mark_stage_played("CA1")
+        self.assertTrue(jobs.get("CA1")["stage_played"])
+        # Re-asserting the same stage must not re-arm the tone, or the hold loop would play it on
+        # every pass and train the owner to ignore it.
+        jobs.set_stage("CA1", "retrying")
+        self.assertTrue(jobs.get("CA1")["stage_played"])
+
+    def test_stage_on_an_unknown_call_is_a_no_op(self):
+        v.Jobs().set_stage("gone", "retrying")      # must not raise
+        v.Jobs().mark_stage_played("gone")
 
     def test_expired_jobs_are_swept_on_write(self):
         jobs = v.Jobs(ttl=0)

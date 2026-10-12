@@ -35,6 +35,13 @@ Text your TextGrid number (a leading `TOYOTA` is optional):
 | `LOCK TRUNK` | lock trunk |
 
 Car-opening actions (`UNLOCK`, `TRUNK`) require a confirmation word (`YES`/`CONFIRM`) to avoid accidents.
+
+**Auto-lock-and-retry.** If a `START` comes back refused because the car isn't secured (Toyota's
+*"ensure the vehicle is secured... [D1]"*), the bridge locks the car and starts it once more, on
+both channels, and says so: *"The car wasn't locked, so I locked it and started it: ..."*. It is one
+retry, never a loop. "Secured" also covers an open window or an ajar trunk, so if the second start
+is refused the same way the reply names those instead of pretending the lock fixed it. Switch it off
+with `AUTO_LOCK_RETRY=0`.
 Senders not in `ALLOWED_NUMBERS` are rejected. Requests are signature-verified against
 `TEXTGRID_WEBHOOK_SECRET` (TextGrid's `X-TextGrid-Signature` scheme — see `textgrid_auth.py`).
 
@@ -73,6 +80,7 @@ shouldn't announce "the vehicle is now unlocked". Two tones matter:
 | `partial` | two flat beeps | it went out, but no confirmation came back — **state unknown** |
 | `failed` | two falling beeps | the car or the app refused it |
 | `reject` | one low buzz | that code isn't recognised |
+| `retrying` | three mid beeps, up then down | the car refused the start as unsecured; locking it and trying once more |
 
 **You can hang up on the first tone.** The command runs in a background thread, so it completes
 whether or not the call is still up; the second tone is a courtesy, never the mechanism. A

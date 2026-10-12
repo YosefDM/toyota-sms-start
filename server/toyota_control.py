@@ -562,6 +562,32 @@ _RESULT_CODES: dict[str, re.Pattern[str]] = {
 }
 
 
+# Toyota's refusal when the car isn't secured. Observed live on this car as
+#   "Remote command failed — ensure the vehicle is secured… [D1]"
+# (docs/UI-MAP.md). `[D1]` is a SHARED failure code, not a start-specific one, and "secured" covers
+# more than the doors — an open window or an ajar trunk reads the same way. That is why the retry
+# built on this (see app.py) locks and tries ONCE more and then reports honestly, rather than
+# assuming a lock must have fixed it. Matched by code OR by wording, so a reworded push still
+# lands; `_RESULT_CODES` is checked first by the caller, so a SUCCESS push can never reach here.
+_NOT_SECURED_RE = re.compile(
+    r"\[D1\]"
+    r"|ensure\s+the\s+vehicle\s+is\s+secured"
+    r"|vehicle\s+is\s+not\s+secured"
+    r"|not\s+secured",
+    re.IGNORECASE,
+)
+
+
+def refused_as_unsecured(text: str) -> bool:
+    """True when this push is Toyota refusing because the car isn't secured (typically unlocked).
+
+    Deliberately narrow: it must NOT match the other refusals we know about (a keyfob left in the
+    cabin, `[70]`), because the only sane response to those is to tell the owner, not to lock the
+    car and try again.
+    """
+    return bool(_NOT_SECURED_RE.search(text or ""))
+
+
 def result_is_success(command: str | None, text: str) -> bool | None:
     """Did this push say the command SUCCEEDED? True / False / None when we can't tell.
 

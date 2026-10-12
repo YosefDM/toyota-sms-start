@@ -71,6 +71,15 @@ Status:
   (their SMS client does; see the error-1010 note in PRODUCTION.md). (3) how many commas the handset
   needs. Offline: 115 unit tests + a TestClient drive of every branch with a stubbed car; the SMS path
   is unchanged and re-verified.
+- 🆕 **AUTO-LOCK-AND-RETRY (2026-10-12, both channels).** A START the car refuses as unsecured
+  (`[D1]` / *"ensure the vehicle is secured"*) now locks the car and starts once more, instead of
+  handing the owner a failure they'd have to fix with two more texts. One retry, never a loop; it
+  stops if the lock won't confirm; if the second start is refused the same way it names the open
+  window / trunk / unlatched door instead of pretending the lock helped. Narrow on purpose — a
+  keyfob-in-cabin refusal (`[70]`) is NOT retried, because locking fixes nothing there. The UI
+  claim is now refreshable (`_touch_ui`, token is a counter not a timestamp) because the sequence
+  runs ~100s and would otherwise look wedged to `_claim_ui` mid-work. Voice plays a `retrying`
+  tone once and waits up to `VOICE_RETRY_HOLD_SECONDS`. Off with `AUTO_LOCK_RETRY=0`.
 - ⬜ **NEXT:** OTP re-auth relay (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` → alert + relay
   code); a watchdog (use `/health` + notification-shade); optional quick-button fast path (skip the modal
   for Lock/Unlock/Start).
