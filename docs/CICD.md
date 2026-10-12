@@ -4,7 +4,7 @@ Three GitHub Actions workflows (`.github/workflows/`):
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | every PR + push to `master` | byte-compiles the server + runs the offline unit tests (`server/tests/`) |
+| `ci.yml` | every PR + every branch push | byte-compiles the server + runs the offline unit tests (`server/tests/`) |
 | `claude-review.yml` | every PR | a senior-engineer review pass (opus, read-only repo tools) posts one comprehensive comment via `gh pr comment`; primary + fallback token failover |
 | `deploy.yml` | merge to `master` touching `server/**` (+ manual) | deploys the webhook to the prod rig over an IAP tunnel |
 

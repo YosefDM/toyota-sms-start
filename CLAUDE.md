@@ -5,10 +5,17 @@ back onto the running rig, and what to do next. Deep detail lives in `docs/`; th
 
 ## What this is
 
-Control a **2025 Toyota Camry** by **SMS**. The owner carries a basic (non-smart) phone; they text keywords
-(`TOYOTA START`, `LOCK`, `UNLOCK`, `HAZARDS`, …) to a TextGrid number; an always-on server taps the matching
-button in the **official Toyota OneApp** running inside a rooted Android emulator, which makes the app's own
-authenticated request to Toyota. Problem → solution → setup is in `README.md`.
+Control a **2025 Toyota Camry** from a basic (non-smart) phone, over two channels into one rig:
+
+- **SMS** — text keywords (`TOYOTA START`, `LOCK`, `UNLOCK`, `HAZARDS`, …) to a TextGrid number and read
+  the car's own confirmation back.
+- **Phone call** — CALL the same number and key a per-command secret code. Built for a **speed dial**
+  (`+1845…,,4821`): one keypress on waking starts the car. The call answers in **tones, not words** —
+  nothing about the car is ever spoken aloud. See `server/voice.py` and `docs/PRODUCTION.md`.
+
+Either way an always-on server taps the matching button in the **official Toyota OneApp** running inside a
+rooted Android emulator, which makes the app's own authenticated request to Toyota. Problem → solution →
+setup is in `README.md`.
 
 ### ⛔ HARD RULE (absolute, owner-stated)
 **NEVER send a raw/direct/reverse-engineered API call to the car or Toyota's backend. EVERY car action is a
@@ -22,8 +29,10 @@ live: `TOYOTA LOCK` → car locked → reply *"2025 Camry Hybrid: The vehicle is
 
 Status:
 - ✅ GCP VM, nested virt + KVM, emulator boots hardware-accelerated; rooted (Magisk), logged into the app
-- ✅ **Public front door LIVE:** `toyota.REDACTED-HOST.com` → Cloudflare Tunnel → the webhook; TextGrid number
-  `+15550001234`'s smsUrl points at it; `X-TextGrid-Signature` verified (see `server/textgrid_auth.py`)
+- ✅ **Public front door LIVE:** the tunnel host → Cloudflare Tunnel → the webhook; the TextGrid number's
+  smsUrl points at it; `X-TextGrid-Signature` verified (see `server/textgrid_auth.py`).
+  *(The actual hostname and phone number live in the private memory `toyota-gcp-rig-state` — NOT in this
+  public repo.)*
 - ✅ **Commands by resource-id + guard** (`server/toyota_control.py`): scrolls to reveal the Remote panel /
   opens the ⋯ Advanced Remote modal, taps by id, refuses on mismatch; all 9 commands; trunk disambiguated
   by label. Real result read from `dumpsys notification` (`await_result`) → SMS reply.
@@ -43,6 +52,34 @@ Status:
   `FcmRetry` lines in logcat are GMS backoff noise, not a diagnosis. `app_reported_success()` remains
   as the fallback when a push is missing. A watchdog should spot "the app logged success but no push
   arrived" and restart the app automatically.
+- 🆕 **VOICE PATH DEPLOYED & CONFIGURED (2026-10-12, PR #5) — AWAITING ONE REAL CALL.**
+  Call the number, key a per-command code, the car acts (no confirm keypress — see below); confirmation is a **tone**, never
+  speech (owner's requirement: a spoken "the vehicle is now unlocked" is a state disclosure). Built for
+  a speed-dial contact with comma pauses, so the prompt sits INSIDE the `<Gather>` for barge-in, and the
+  command runs on a background thread so hanging up on the first tone is normal and supported.
+  `/voice`, `/voice/code`, `/voice/wait`, `/voice/tone/<name>.wav` — all on the
+  existing tunnel and service. Only `start`/`lock`/`unlock` are reachable by phone.
+  **Already done on the rig:** branch checked out at `/opt/toyota-sms-remote`, `VOICE_PUBLIC_URL` +
+  `VOICE_CODES` (6-digit, CSPRNG-generated) + `VOICE_REQUIRE_SIGNATURE=1` written to the VM's
+  `server/.env` (a timestamped `.bak` sits beside it), `toyota-sms` restarted, and the number's
+  **voiceUrl** set to `<tunnel-host>/voice` via the Twilio-compatible API (see PRODUCTION.md — no
+  dashboard needed). Verified live through the real tunnel: signature accept/reject, the caller
+  allowlist, the wrong-code buzz + re-gather, and the tone media (`audio/wav`, 200).
+  **What only a real call can answer:** (1) do inbound voice webhooks carry `X-TextGrid-Signature`?
+  Their doc never says — if the journal shows *"no X-TextGrid-Signature header"*, set
+  `VOICE_REQUIRE_SIGNATURE=0`. (2) does TextGrid's voice client / `<Play>` fetcher clear Cloudflare?
+  (their SMS client does; see the error-1010 note in PRODUCTION.md). (3) how many commas the handset
+  needs. Offline: 119 unit tests + a TestClient drive of every branch with a stubbed car; the SMS path
+  is unchanged and re-verified.
+- 🆕 **AUTO-LOCK-AND-RETRY (2026-10-12, both channels).** A START the car refuses as unsecured
+  (`[D1]` / *"ensure the vehicle is secured"*) now locks the car and starts once more, instead of
+  handing the owner a failure they'd have to fix with two more texts. One retry, never a loop; it
+  stops if the lock won't confirm; if the second start is refused the same way it names the open
+  window / trunk / unlatched door instead of pretending the lock helped. Narrow on purpose — a
+  keyfob-in-cabin refusal (`[70]`) is NOT retried, because locking fixes nothing there. The UI
+  claim is now refreshable (`_touch_ui`, token is a counter not a timestamp) because the sequence
+  runs ~100s and would otherwise look wedged to `_claim_ui` mid-work. Voice plays a `retrying`
+  tone once and waits up to `VOICE_RETRY_HOLD_SECONDS`. Off with `AUTO_LOCK_RETRY=0`.
 - ⬜ **NEXT:** OTP re-auth relay (detect `LoginActivity`/`FRMainActivity` → `NotLoggedIn` → alert + relay
   code); a watchdog (use `/health` + notification-shade); optional quick-button fast path (skip the modal
   for Lock/Unlock/Start).
@@ -53,7 +90,7 @@ Full live state + the exact resume checklist is in memory `toyota-gcp-rig-state`
 
 ## The rig (GCP) — how to reconnect
 
-- **VM:** `toyota-rig`, zone `northamerica-northeast1-a`, **n2-standard-4** (Intel; nested virt is
+- **VM:** `toyota-rig`, zone `northamerica-northeast1-a`, **n2-standard-8** as of 2026-10-12 (was -4; Intel — nested virt is
   **Intel-only** on GCP — never n2d/AMD). External IP is ephemeral. *(GCP project ID, gcloud account, device
   PIN, and VNC password are kept in the private memory `toyota-gcp-rig-state` — NOT in this public repo.)*
 - **The dev PC is behind the Techloq TLS-MITM filter**, so to drive gcloud/SSH:
@@ -136,13 +173,17 @@ scripts/device/  — Magisk boot module + CA install (CA is dev-only)
 scripts/host/    — rig-supervisor.sh (Linux/GCP: the `toyota-rig` service — boot emulator, unlock, spawn-gate),
                    supervisor.sh (Windows/dev equivalent), emulator boot, per-command taps, capture_screen
 scripts/deploy/  — remote_deploy.sh (runs on the VM; git pull + venv + restart ONLY the webhook service)
-server/          — FastAPI TextGrid webhook: verify sender → parse keyword → tap → read push → reply
-                   (app.py + textgrid_auth.py signature verify + toyota_control.py taps)
+server/          — FastAPI TextGrid webhooks: verify sender → parse keyword/code → tap → read push → reply
+                   (app.py + textgrid_auth.py signature verify + toyota_control.py taps
+                    + voice.py: the phone/DTMF path — code table, TwiML, synthesised tones, lockout)
   tests/         — offline unit tests (parsing/matching; no device needed)
 ```
 
 ## CI/CD (see docs/CICD.md)
-- **Push/PR → `ci.yml`**: byte-compile + `server/tests` unit tests.
+- **Any branch push, and any PR → `ci.yml`**: byte-compile + `server/tests` unit tests.
+  Deliberately not master-only: a branch used to get no CI until a PR existed, and a PR that
+  went stale reported *no checks at all* (GitHub can't build a merge ref for a conflicting PR),
+  which reads as green. The push run tests the branch tip; the PR run tests the merge result.
 - **PR → `claude-review.yml`**: `/code-review` skill posts findings as PR comments (auth: subscription
   OAuth token in `CLAUDE_CODE_OAUTH_TOKEN`). Runs only once the workflow is on `master`.
 - **Merge to `master` (server changes) → `deploy.yml`**: GitHub-hosted runner auths to GCP with a

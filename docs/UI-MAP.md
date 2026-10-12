@@ -94,6 +94,10 @@ be matched by **visible text**.
   START waits up to 6 s for the sheet to animate in; other commands do one cheap no-wait check as a safety net.
 - Verified live: START now reaches the car and returns a real result (e.g. Toyota's *"Remote command failed —
   ensure the vehicle is secured… [D1]"* when the car refuses, vs. the earlier silent no-op).
+- That `[D1]` refusal is now **acted on**: `tc.refused_as_unsecured()` recognises it and the bridge locks
+  the car and retries the start once (see PRODUCTION.md → Auto-lock-and-retry). `[D1]` is a *shared*
+  not-secured code, so it also fires for an open window or an ajar trunk — which is exactly why the retry
+  runs only once and then reports what it tried.
 
 ---
 

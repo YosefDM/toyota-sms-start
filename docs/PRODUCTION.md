@@ -181,6 +181,173 @@ The app's authoritative success/failure signal is a **push notification** from T
 - Per-sender rate limit. Outbound (operator alerts / OTP relay) will use the Twilio SDK pointed at
   `api.textgrid.com` — see `.env.example`.
 
+## Voice bridge — phone call + DTMF code (built — `server/voice.py`)
+
+The second control channel, for the gesture SMS can't match: **one speed-dial keypress**. The owner
+stores the number with the code behind comma pauses (`+1845…,,4821`), presses it on waking, and
+the engine starts. Same emulator, same taps, same hard rule.
+
+### Wiring
+- The number's **voiceUrl** (HTTP POST) → `https://<host>/voice`, through the SAME Cloudflare
+  Tunnel and the same uvicorn on `127.0.0.1:8080`. Nothing new to run or supervise.
+- `VOICE_PUBLIC_URL` must equal that URL **byte-for-byte and end in `/voice`**: it is the signed
+  URL, the base for the `<Gather action=…>` callbacks (`/voice/code`, `/voice/wait`) and the
+  base for the `<Play>` tone URLs.
+- `VOICE_CODES="4821:start,7390:lock,5566:unlock"` in the VM's `server/.env` (hand-managed, not
+  deployed — same as the webhook secret). Empty ⇒ the phone path is off and says so.
+
+### What TextGrid's voice API actually gives us (their "Breeze Voice API" doc)
+Twilio-compatible in shape, a strict subset in practice. The three limits that shaped the code:
+- **Verbs are only `<Say> <Dial> <Gather> <Play> <Pause> <Redirect>`. There is NO `<Hangup>`** — a
+  call is ended by letting the TwiML document run out.
+- **`<Gather>` documents only `action`, `numDigits`, `timeout`** — no `finishOnKey`, so there is no
+  `#` to end the digits and **every code must be the same length**, enforced in `parse_codes`.
+- **Voices**: `man`, `female`, `Polly.*`. (`alice` appears in their example but is *not* in their
+  supported list — don't use it.)
+- Their doc covers the *outbound* call flow only; inbound voiceUrl is undocumented but serves the
+  same TwiML with the same Twilio-style params (`CallSid`, `From`, `Digits`, …). ✅ Verify on the
+  first live call.
+- **It says nothing about signing inbound voice webhooks.** `VOICE_REQUIRE_SIGNATURE=1` is the
+  default and treats voice like SMS; if live calls are refused and the log says *"no
+  X-TextGrid-Signature header"*, that's the answer — set it to `0`. The caller allowlist, the
+  per-command code and the lockout all still apply, so the path is not left unguarded.
+
+### The flow
+1. `POST /voice` — signature → config → caller allowlist → lockout, then a `<Gather numDigits=N>`
+   with the prompt **inside** it. Inside matters: a speed-dial handset blurts its DTMF over the
+   greeting, and a prompt played *before* the gather would swallow it.
+2. `POST /voice/code` — the code is matched with `compare_digest` against every entry (no
+   short-circuit, no timing side channel on a 4-digit secret). Wrong ⇒ buzz + re-gather, and the
+   failure is counted **across calls**; 5 within 15 min locks the caller out for 15 min.
+3. **No second confirming keypress, including for unlock.** It was there at first and it was
+   theatre: the gesture this path exists for is a speed dial, so the `press 1` would be stored in
+   the same contact as the code and autosent by the same single press — one burst, one keypress,
+   indistinguishable from any other. What makes an unlock deliberate here is the per-command secret
+   (keying the *unlock* code is itself the choice), plus the allowlist and the lockout. `unlock`
+   stays in `tc.CONFIRM_REQUIRED` because on SMS the word still earns its keep: there "UNLOCK" is
+   a word a fat finger can produce and there is no per-command secret.
+4. Dispatch claims the one UI lock (shared with SMS — one car, one screen), starts the tap on a
+   background thread, plays `accepted`, and parks the call in a silent `<Pause>`/`<Redirect>` loop.
+5. `POST /voice/wait` plays the verdict tone the moment there is one, or gives up after
+   `VOICE_HOLD_SECONDS` with `partial`. **The command is never abandoned** — only the readback is.
+
+### Tones, not words (owner-stated requirement)
+Nothing about the car is spoken: a phone at the ear in a driveway, a bystander, or a voicemail must
+not hear "the vehicle is now unlocked". Five beeps, synthesised at import by `voice.py` and served
+from memory at `/voice/tone/<name>.wav` (unauthenticated on purpose — it's what TextGrid's media
+fetcher pulls, and there is no information in a beep):
+
+| Tone | Sound | Means | Decided by |
+|---|---|---|---|
+| `accepted` | two rising | code right, command on its way | the code matched |
+| `done` | three rising | the car confirmed it | the push carries this command's own success code |
+| `partial` | two flat | sent, outcome **unknown** | no push, or only the app's own success event |
+| `failed` | two falling | refused, or never sent | `ControlError` / a push with another result code |
+| `reject` | one low buzz | code not recognised | — |
+| `retrying` | three mid, up-down | refused as unsecured; locking and retrying | `tc.refused_as_unsecured()` on the push |
+
+`tc.result_is_success()` is what separates `done` from `failed`: Toyota pushes refusals down the
+same channel ("…keyfob was detected [70]"), so the *arrival* of a push is not an outcome — only its
+result code is. A tone can't hedge, so anything undecidable is `partial`, never `done`.
+**`partial` right after a START is the signature of the FCM push outage** — see the FCM section;
+the fix is `adb shell am force-stop com.toyota.oneapp`.
+
+### Setting the number's voiceUrl WITHOUT the dashboard (verified 2026-10-12)
+TextGrid's Twilio-compatible number API works and takes either auth header (`Basic` *or* `Bearer`,
+both base64 of `sid:token`). The number's sid is URL-encoded — they are base64 and contain `==`.
+
+```bash
+cd /opt/toyota-sms-remote/server && set -a && . ./.env && set +a
+A="Authorization: Basic $(printf '%s:%s' "$TEXTGRID_ACCOUNT_SID" "$TEXTGRID_AUTH_TOKEN" | base64 -w0)"
+ENC=$(python3 -c "import urllib.parse,os;print(urllib.parse.quote(os.environ['TEXTGRID_ACCOUNT_SID'],safe=''))")
+# list numbers (find the one you want, note its sid), then:
+curl -sS -X POST -H "$A" --data-urlencode "VoiceUrl=$VOICE_PUBLIC_URL" \
+  --data-urlencode "VoiceMethod=POST" \
+  "https://api.textgrid.com/2010-04-01/Accounts/$ENC/IncomingPhoneNumbers/<url-encoded-number-sid>.json"
+```
+Twilio-style **form** params (`VoiceUrl`, `VoiceMethod`) work, despite their doc saying POSTs must be
+JSON; a JSON body with `voiceUrl` is accepted too. Verify with a plain `GET` of the same URL — a
+number that has never had voice configured simply omits `voice_url` from its record rather than
+returning it empty.
+
+### ⚠️ Cloudflare error 1010 will waste an hour if you don't know about it
+Probing the public webhook with **python-urllib gets a blanket HTTP 403 whose body is
+`error code: 1010`** — Cloudflare blocking the client's fingerprint. It never reaches uvicorn, so
+the journal shows nothing and it looks exactly like a signature rejection. **Use `curl`** (which
+passes) for any manual probe of `https://<tunnel-host>/...`.
+
+This also means a live call is the only way to know whether **TextGrid's own voice HTTP client and
+its `<Play>` media fetcher** get through Cloudflare. Their *SMS* webhook client demonstrably does.
+If a call connects but nothing is spoken and the journal is empty, this is the first suspect.
+
+### Auto-lock-and-retry on an unsecured start (both channels)
+A remote start the car refuses because it isn't secured is the one failure the owner can fix from a
+basic phone — by sending LOCK and then START again, two messages and a minute, usually standing in
+the cold. So `_command_reply` does it for them: on that refusal it locks the car and starts once
+more.
+
+- **The trigger** is `tc.refused_as_unsecured()`, which matches `[D1]` or the wording *"ensure the
+  vehicle is secured"* (observed live, see UI-MAP). It is deliberately narrow and must stay that
+  way: a keyfob left in the cabin (`[70]`) is also a start refusal, and locking the car does
+  nothing about it, so retrying would just burn a minute and refuse again.
+- **One retry, never a loop.** `[D1]` is a shared "not secured" code that also covers an open
+  window or an ajar trunk, so a lock is a good guess, not a guarantee. If the second start is
+  refused the same way, the reply says the lock didn't help and names those causes.
+- **If the lock itself doesn't confirm**, it stops there and says so rather than starting a car it
+  could not secure.
+- **The UI claim is refreshed between legs** (`_touch_ui`). Three commands back to back run ~100s,
+  and without the refresh `_claim_ui` would decide a perfectly healthy worker was wedged partway
+  through its own sequence and let a second command onto the same screen. This is why the claim
+  token is now a counter rather than the held-since timestamp.
+- **On the phone**, the hold loop plays the `retrying` tone once and then extends its patience to
+  `VOICE_RETRY_HOLD_SECONDS` (150s). Without that it would hang up with `partial` on a start that
+  was about to succeed — the most misleading thing this path could do.
+- Switch the whole behaviour off with `AUTO_LOCK_RETRY=0`.
+
+### Tuning the speed dial
+**The handset starts counting its commas when the call is ANSWERED, not when it starts dialling**, so
+there is no ring time to budget for — only the ~1-2s for TextGrid to fetch the TwiML and open the
+`<Gather>`. That makes the pause much shorter than it first looks: **two commas** is the right
+starting point, not five.
+
+A comma is 2s on most handsets and 3s on some, and you cannot subdivide it, so two of them land at
+4-6s — safely after the gather opens and far inside `VOICE_GATHER_TIMEOUT` (10s). Then listen:
+
+- **no tone at all** ⇒ sent too early, before anything was listening. Add a comma.
+- **the low reject buzz** ⇒ the digits arrived partial or garbled. Add a comma.
+- **two rising beeps** ⇒ right.
+
+If a handset ever needs more than ~3 commas, raise `VOICE_GATHER_TIMEOUT` rather than stacking
+commas against a deadline. `VOICE_FIRST_PAUSE` (8s) and `VOICE_LOOP_PAUSE` (5s) are unrelated —
+they set how often the hold loop checks back.
+
+### Why the phone path refuses to run without an allowlist
+`ALLOWED_NUMBERS` is **required** for voice, and an empty one turns the path off rather than letting
+every caller through (the SMS idiom `if ALLOWED_NUMBERS and caller not in ...` fails open; here that
+is a hole). The reason is that the wrong-code lockout is counted **per caller**: an unrestricted
+caller can present a new caller ID on each call and get a fresh guess budget every time, which
+leaves the codes -- `unlock` among them -- with no effective attempt limit at all. On this channel
+the allowlist is part of the rate limit, not just an authorisation check.
+
+Two further limits back it up:
+- **Six-digit minimum** (`voice.MIN_CODE_LENGTH`). Against the real lockout (5 wrong per caller per
+  15 min, ~480 guesses/day) a 4-digit code is ~21 days of patient dialling -- an attack someone
+  would actually run. Six digits is ~5.7 years, and costs the owner nothing because the handset
+  types it off a speed dial.
+- **A global cap** (`Throttle.global_max_failures`, 15) counted across all callers. Per-caller
+  counting is multiplied by the size of the allowlist -- owner plus spouse is two budgets, and the
+  attacker chooses which to present. It sits above the per-caller limit, so with one allowlisted
+  number the per-caller limit always trips first and the owner never meets it. The trade-off is
+  accepted deliberately: a global lockout **can** be induced by an attacker, denying the owner the
+  phone path for the window, but SMS is unaffected (no code to guess) and an unlimited guess budget
+  against the unlock code is the worse failure. A correct code clears the global counter.
+
+### Only three commands by phone
+`start`, `lock`, `unlock` — enforced by `VOICE_ALLOWED_COMMANDS`, with a test that fails if the
+list grows past what `COMMAND_IDS` and `CONFIRM_REQUIRED` cover. A speed-dial code sits in the
+handset's contact list in clear text, so the trunk, horn, lights, hazards and buzzer stay
+SMS-only.
+
 ## Watchdog
 
 - Screenshot on command; if the app isn't on the expected screen, relaunch + re-login.
