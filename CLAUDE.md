@@ -29,8 +29,10 @@ live: `TOYOTA LOCK` → car locked → reply *"2025 Camry Hybrid: The vehicle is
 
 Status:
 - ✅ GCP VM, nested virt + KVM, emulator boots hardware-accelerated; rooted (Magisk), logged into the app
-- ✅ **Public front door LIVE:** `toyota.REDACTED-HOST.com` → Cloudflare Tunnel → the webhook; TextGrid number
-  `+15550001234`'s smsUrl points at it; `X-TextGrid-Signature` verified (see `server/textgrid_auth.py`)
+- ✅ **Public front door LIVE:** the tunnel host → Cloudflare Tunnel → the webhook; the TextGrid number's
+  smsUrl points at it; `X-TextGrid-Signature` verified (see `server/textgrid_auth.py`).
+  *(The actual hostname and phone number live in the private memory `toyota-gcp-rig-state` — NOT in this
+  public repo.)*
 - ✅ **Commands by resource-id + guard** (`server/toyota_control.py`): scrolls to reveal the Remote panel /
   opens the ⋯ Advanced Remote modal, taps by id, refuses on mismatch; all 9 commands; trunk disambiguated
   by label. Real result read from `dumpsys notification` (`await_result`) → SMS reply.
@@ -58,7 +60,7 @@ Status:
   `/voice`, `/voice/code`, `/voice/confirm`, `/voice/wait`, `/voice/tone/<name>.wav` — all on the
   existing tunnel and service. Only `start`/`lock`/`unlock` are reachable by phone.
   **To go live:** set `VOICE_PUBLIC_URL` + `VOICE_CODES` in the VM's `server/.env`, point the number's
-  **voiceUrl** at `https://toyota.REDACTED-HOST.com/voice`, then make one real call and check two things:
+  **voiceUrl** at `https://<tunnel-host>/voice`, then make one real call and check two things:
   (1) do inbound voice webhooks carry `X-TextGrid-Signature`? Their doc never says — if the log shows
   *"no X-TextGrid-Signature header"*, set `VOICE_REQUIRE_SIGNATURE=0`. (2) how many commas the handset
   needs. Verified offline end-to-end against the real endpoints (115 unit tests + a TestClient drive of
