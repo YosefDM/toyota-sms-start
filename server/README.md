@@ -55,7 +55,11 @@ anything was listening: add one. The prompt is played *inside* the `<Gather>` pr
 code keyed over the greeting is still heard. `;` (wait for me) works on some phones if you'd rather
 press send yourself.
 
-`UNLOCK` needs its confirm keypress, which a dial string can also carry: `+1845…,,5566,,1`.
+Unlock is one press too — **no** "press 1 to confirm" step. On SMS that confirmation word earns
+its keep, but on a speed dial the confirming keypress would live in the same contact as the code
+and be autosent by the same single press, so it could not tell a deliberate unlock from an
+accidental one. Here the per-command secret is what makes it deliberate: each command has its own
+code, so keying the unlock code is already an unambiguous choice.
 
 ### The call answers in tones, not words
 

@@ -95,10 +95,12 @@ class PhonePathInvariants(unittest.TestCase):
         for command in v.VOICE_ALLOWED_COMMANDS:
             self.assertIn(command, tc.COMMAND_IDS, command)
 
-    def test_car_opening_commands_still_need_confirmation(self):
-        # If `unlock` ever leaves CONFIRM_REQUIRED, a single stored speed-dial string would open
-        # the car with no second keypress. Fail loudly instead.
+    def test_unlock_still_needs_its_confirmation_word_on_sms(self):
+        # The VOICE path deliberately has no confirm keypress (a speed dial would autosend it, so
+        # it distinguished nothing). That decision must not bleed into SMS, where "UNLOCK" is a
+        # word a fat finger can produce and there is no per-command secret to make it deliberate.
         self.assertIn("unlock", tc.CONFIRM_REQUIRED)
+        self.assertIn("unlock_trunk", tc.CONFIRM_REQUIRED)
 
     def test_no_phone_command_lacks_a_success_code(self):
         # The voice path answers in tones, so it must be able to DECIDE done vs failed for

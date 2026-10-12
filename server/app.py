@@ -95,7 +95,6 @@ VOICE_REQUIRE_SIGNATURE = os.environ.get("VOICE_REQUIRE_SIGNATURE", "1").strip()
 # How long the caller is parked in the say/pause/redirect hold loop before we give up on Toyota's
 # push. Slightly longer than RESULT_TIMEOUT so the loop outlives the thing it is waiting for.
 VOICE_HOLD_SECONDS = int(os.environ.get("VOICE_HOLD_SECONDS", "45"))
-VOICE_CONFIRM_WINDOW = int(os.environ.get("VOICE_CONFIRM_WINDOW", "60"))
 # Generous: with a speed-dial pause string the handset may still be counting commas when the
 # gather opens, and a human on a keypad is slower than this prompt is short.
 VOICE_GATHER_TIMEOUT = int(os.environ.get("VOICE_GATHER_TIMEOUT", "10"))
@@ -103,7 +102,7 @@ VOICE_FIRST_PAUSE = int(os.environ.get("VOICE_FIRST_PAUSE", "8"))
 VOICE_LOOP_PAUSE = int(os.environ.get("VOICE_LOOP_PAUSE", "5"))
 
 if VOICE_PUBLIC_URL and not VOICE_PUBLIC_URL.endswith("/voice"):
-    # The <Gather>/<Redirect> URLs are this value plus "/code", "/confirm", "/wait", and those have
+    # The <Gather>/<Redirect> URLs are this value plus "/code" and "/wait", and those have
     # to land on the routes below. Point it at /sms, or at the bare host, and every call gets as far
     # as the prompt and then 404s on the digits — which looks like TextGrid dropping the DTMF.
     logger.error("VOICE_PUBLIC_URL is %r but must end in '/voice' — the callback URLs are built "
@@ -120,8 +119,6 @@ except v.CodeTableError as e:
 app = FastAPI(title="Toyota SMS Remote")
 _voice_throttle = v.Throttle()
 _voice_jobs = v.Jobs()
-# CallSid -> (command, asked_at) for a car-opening command awaiting its confirm keypress.
-_voice_pending: dict[str, tuple[str, float]] = {}
 _last_cmd_at: dict[str, float] = {}
 _pending_confirm: dict[str, tuple[str, float]] = {}
 _ui_lock = threading.Lock()
@@ -559,7 +556,6 @@ def _voice_dispatch(call_sid: str, caller: str, command: str) -> str:
     if token is None:
         return v.say("The car is still working on the last command. Try again shortly. Goodbye.")
     _last_cmd_at[caller] = now
-    _voice_pending.pop(call_sid, None)
     _voice_jobs.start(call_sid, command)
     _run_bg(_do_voice_command, call_sid, command, token)
     logger.info("voice: dispatching %s for call %s", command, call_sid[-6:] or "?")
@@ -629,39 +625,20 @@ async def voice_code(request: Request):
 
     _voice_throttle.record_success(caller)
 
-    # Car-opening commands keep their confirmation step on this channel too — it is just a second
-    # keypress instead of the word YES. A speed-dial string can carry it: `…,,5566,,1`.
-    if command in tc.CONFIRM_REQUIRED:
-        now = time.time()
-        # Sweep first: a caller who hears the confirm prompt and just hangs up leaves an entry
-        # behind, and on an always-on rig that is a slow leak of one per abandoned call.
-        for sid in [s for s, (_, at) in _voice_pending.items()
-                    if now - at > VOICE_CONFIRM_WINDOW]:
-            del _voice_pending[sid]
-        _voice_pending[call_sid] = (command, now)
-        return _xml(v.gather(v.say_frag("Press 1 to confirm."), _voice_url("/confirm"),
-                             num_digits=1, timeout=VOICE_GATHER_TIMEOUT,
-                             after=v.say_frag("Not confirmed. Goodbye.")))
-
+    # NO second "press 1 to confirm" step, deliberately, including for unlock — and `unlock` stays
+    # in `tc.CONFIRM_REQUIRED` because on SMS that word still earns its keep.
+    #
+    # On the phone it did not. The gesture this path exists for is a speed dial, so the confirming
+    # keypress would be stored in the same contact as the code (`…,,<code>,,1`) and autosent by the
+    # same single press: it cannot distinguish a deliberate unlock from an accidental one, because
+    # both arrive as one burst from one keypress. It guarded nothing.
+    #
+    # What makes an unlock deliberate here is the code itself. Each command has its OWN secret, so
+    # keying the unlock code is already an unambiguous choice — unlike SMS, where "UNLOCK" is a
+    # word that a fat finger or an autocomplete can produce by accident and where there is no
+    # per-command secret at all. Dropping the step also removes a gather that could time out and
+    # leave the owner standing at a locked car.
     return _xml(_voice_dispatch(call_sid, caller, command))
-
-
-@app.post("/voice/confirm")
-async def voice_confirm(request: Request):
-    raw = await request.body()
-    form, refusal = _voice_gate(request, raw, "/confirm")
-    if refusal:
-        return _xml(refusal)
-
-    call_sid = form.get("CallSid", "")
-    pending = _voice_pending.pop(call_sid, None)
-    if not pending or time.time() - pending[1] > VOICE_CONFIRM_WINDOW:
-        return _xml(v.say("Nothing is waiting for confirmation. Goodbye."))
-    if form.get("Digits", "").strip() != "1":
-        # Not the confirm key: the reject buzz, because "I haven't touched the car" spoken aloud
-        # still tells a bystander what this line is for.
-        return _tone("reject")
-    return _xml(_voice_dispatch(call_sid, form.get("From", ""), pending[0]))
 
 
 @app.post("/voice/wait")

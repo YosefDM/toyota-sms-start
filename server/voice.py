@@ -63,9 +63,11 @@ logger = logging.getLogger("toyota_voice")
 # Commands reachable BY PHONE — deliberately only the three core controls, not all nine.
 # A code keyed on a phone keypad is a short secret that can be shoulder-surfed or guessed, and on a
 # speed dial it is stored in the handset's contact list in clear text, so the phone path exposes
-# the smallest useful set; hazards, horn, buzzer, lights and the trunk stay SMS-only. `unlock` is
-# here but still passes through `toyota_control.CONFIRM_REQUIRED`, so it costs a second, separate
-# keypress (see app.py).
+# the smallest useful set; hazards, horn, buzzer, lights and the trunk stay SMS-only. `unlock` is here, and
+# unlike the SMS path it costs NO second confirming keypress — on a speed dial that keypress would
+# be stored in the same contact and autosent by the same single press, so it could not tell a
+# deliberate unlock from an accidental one. The per-command secret is what makes it deliberate
+# (see app.py).
 VOICE_ALLOWED_COMMANDS = ("start", "lock", "unlock")
 
 # A code shorter than this is not a secret. Four digits is 10k guesses; the attempt limiter below

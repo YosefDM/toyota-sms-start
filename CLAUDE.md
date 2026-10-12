@@ -53,7 +53,7 @@ Status:
   as the fallback when a push is missing. A watchdog should spot "the app logged success but no push
   arrived" and restart the app automatically.
 - 🆕 **VOICE PATH DEPLOYED & CONFIGURED (2026-10-12, PR #5) — AWAITING ONE REAL CALL.**
-  Call the number, key a 4-digit per-command code, the car acts; confirmation is a **tone**, never
+  Call the number, key a per-command code, the car acts (no confirm keypress — see below); confirmation is a **tone**, never
   speech (owner's requirement: a spoken "the vehicle is now unlocked" is a state disclosure). Built for
   a speed-dial contact with comma pauses, so the prompt sits INSIDE the `<Gather>` for barge-in, and the
   command runs on a background thread so hanging up on the first tone is normal and supported.

@@ -219,8 +219,13 @@ Twilio-compatible in shape, a strict subset in practice. The three limits that s
 2. `POST /voice/code` — the code is matched with `compare_digest` against every entry (no
    short-circuit, no timing side channel on a 4-digit secret). Wrong ⇒ buzz + re-gather, and the
    failure is counted **across calls**; 5 within 15 min locks the caller out for 15 min.
-3. `unlock` still goes through `CONFIRM_REQUIRED` — a second keypress (`press 1`), which a dial
-   string can also carry: `…,,5566,,1`.
+3. **No second confirming keypress, including for unlock.** It was there at first and it was
+   theatre: the gesture this path exists for is a speed dial, so the `press 1` would be stored in
+   the same contact as the code and autosent by the same single press — one burst, one keypress,
+   indistinguishable from any other. What makes an unlock deliberate here is the per-command secret
+   (keying the *unlock* code is itself the choice), plus the allowlist and the lockout. `unlock`
+   stays in `tc.CONFIRM_REQUIRED` because on SMS the word still earns its keep: there "UNLOCK" is
+   a word a fat finger can produce and there is no per-command secret.
 4. Dispatch claims the one UI lock (shared with SMS — one car, one screen), starts the tap on a
    background thread, plays `accepted`, and parks the call in a silent `<Pause>`/`<Redirect>` loop.
 5. `POST /voice/wait` plays the verdict tone the moment there is one, or gives up after
