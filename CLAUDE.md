@@ -180,7 +180,10 @@ server/          — FastAPI TextGrid webhooks: verify sender → parse keyword/
 ```
 
 ## CI/CD (see docs/CICD.md)
-- **Push/PR → `ci.yml`**: byte-compile + `server/tests` unit tests.
+- **Any branch push, and any PR → `ci.yml`**: byte-compile + `server/tests` unit tests.
+  Deliberately not master-only: a branch used to get no CI until a PR existed, and a PR that
+  went stale reported *no checks at all* (GitHub can't build a merge ref for a conflicting PR),
+  which reads as green. The push run tests the branch tip; the PR run tests the merge result.
 - **PR → `claude-review.yml`**: `/code-review` skill posts findings as PR comments (auth: subscription
   OAuth token in `CLAUDE_CODE_OAUTH_TOKEN`). Runs only once the workflow is on `master`.
 - **Merge to `master` (server changes) → `deploy.yml`**: GitHub-hosted runner auths to GCP with a

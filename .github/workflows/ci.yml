@@ -1,9 +1,20 @@
 name: CI
 
+# Runs on EVERY branch push, not just master, plus every PR. A branch used to get no CI at all
+# until a PR existed for it -- and because GitHub cannot build a merge ref for a conflicting PR, a
+# PR that went stale reported no checks whatsoever rather than a failure, which reads as "green".
+# Testing the branch tip independently of the PR removes that silent gap.
+#
+# Note the two are NOT redundant: the push run tests the branch tip, the pull_request run tests the
+# branch MERGED into the base, which is what actually ships.
 on:
   push:
-    branches: [master]
   pull_request:
+
+# One in-flight run per ref: pushing three times in a minute should not queue three full runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
