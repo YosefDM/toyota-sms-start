@@ -12,6 +12,14 @@ service-account*.json
 gcp-*.json
 **/*.keybox.xml
 .env
+# ...and every sideways copy of it. A timestamped backup (made before editing the live .env on the
+# rig) is still a full set of secrets, and `.env` alone does not match `.env.bak.1791780133`.
+.env.*
+*.env.bak*
+# .env.example is committed on purpose (it IS the documentation) and `.env.*` above matches it.
+# Today it survives only because it is already tracked, which stops being true the moment anyone
+# removes and re-adds it, so say so explicitly.
+!.env.example
 *.pem
 *.crt
 *.cer
