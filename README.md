@@ -46,6 +46,10 @@ ear in the driveway never announces your car's state out loud.
   <img src="docs/camry.svg" alt="ASCII art of a 2025 Toyota Camry" width="100%">
 </p>
 
+The SMS/voice front door is **TextGrid**, which speaks Twilio's API and TwiML, so everything here maps
+directly onto Twilio if that's what you know (the inbound *signature* scheme is the one real difference —
+see `server/textgrid_auth.py`).
+
 A real, logged-in instance of the Toyota app runs inside a rooted Android emulator on the server. An inbound
 SMS maps to a keyword — or an inbound call's DTMF code maps to a command — and the controller performs the
 corresponding **tap** on the app's UI. The app then makes its own normal, authenticated request to Toyota —
