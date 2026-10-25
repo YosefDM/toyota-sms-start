@@ -636,5 +636,59 @@ class PanelRetrySwallowsDumpErrors(unittest.TestCase):
             tc.ensure_on_advanced_remote()
 
 
+class BlockingScreens(unittest.TestCase):
+    """The three Splash-adjacent walls that no retry clears: signed-out, the forced-update wall,
+    and the rooted-device wall (a stale bypass after an app update). Added 2026-10-25 after a real
+    update wall (3.6.0) and a real forced sign-out both hit production the same night and had to be
+    diagnosed from a screenshot — the point of these is that a future version of this code (or a
+    watchdog built on it) doesn't have to repeat that."""
+
+    def setUp(self):
+        self._ui_dump = tc._ui_dump
+
+    def tearDown(self):
+        tc._ui_dump = self._ui_dump
+
+    def test_login_activity_raises_not_logged_in_without_a_ui_dump(self):
+        # Must not even try to read the screen for this one — LoginActivity IS the signal.
+        tc._ui_dump = lambda: (_ for _ in ()).throw(AssertionError("should not dump for LoginActivity"))
+        with self.assertRaises(tc.NotLoggedIn):
+            tc._assert_logged_in("com.toyota.oneapp/com.toyota.oneapp.ui.LoginActivity")
+
+    def test_fr_main_activity_also_raises_not_logged_in(self):
+        tc._ui_dump = lambda: (_ for _ in ()).throw(AssertionError("should not dump"))
+        with self.assertRaises(tc.NotLoggedIn):
+            tc._assert_logged_in("com.toyota.oneapp/org.forgerock.FRMainActivity")
+
+    def test_splash_with_update_wall_text_raises_update_required(self):
+        tc._ui_dump = lambda: (
+            "<?xml version='1.0'?><hierarchy>"
+            '<node text="App Update Available" bounds="[0,0][100,100]"/>'
+            "</hierarchy>"
+        )
+        with self.assertRaises(tc.UpdateRequired):
+            tc._assert_logged_in("com.toyota.oneapp/com.toyota.oneapp.ui.splash.SplashActivity")
+
+    def test_splash_with_rooted_wall_text_raises_rooted_device(self):
+        tc._ui_dump = lambda: (
+            "<?xml version='1.0'?><hierarchy>"
+            '<node text="The Toyota app does not support rooted devices." bounds="[0,0][100,100]"/>'
+            "</hierarchy>"
+        )
+        with self.assertRaises(tc.RootedDevice):
+            tc._assert_logged_in("com.toyota.oneapp/com.toyota.oneapp.ui.splash.SplashActivity")
+
+    def test_splash_with_neither_text_is_not_an_error(self):
+        # The known cold-start splash hang: on Splash, no dialog, nothing to raise.
+        tc._ui_dump = lambda: "<?xml version='1.0'?><hierarchy></hierarchy>"
+        tc._assert_logged_in("com.toyota.oneapp/com.toyota.oneapp.ui.splash.SplashActivity")  # no raise
+
+    def test_dashboard_activity_does_not_even_check(self):
+        tc._ui_dump = lambda: (_ for _ in ()).throw(AssertionError("should not dump off Splash"))
+        tc._assert_logged_in(
+            "com.toyota.oneapp/com.toyota.oneapp.features.dashboard.dashboard.presentation.OADashboardActivity"
+        )  # no raise, and must not pay for a UI dump to know that
+
+
 if __name__ == "__main__":
     unittest.main()

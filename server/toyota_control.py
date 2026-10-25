@@ -111,6 +111,17 @@ class NotLoggedIn(ControlError):
     """The app is on a login / signed-out screen; re-auth (possibly OTP) is needed before any tap."""
 
 
+class UpdateRequired(ControlError):
+    """Toyota's backend is refusing this app version — the "App Update Available" wall. Not
+    transient and not something a retry fixes; a newer build has to be installed."""
+
+
+class RootedDevice(ControlError):
+    """The "does not support rooted devices" wall. Means the frida bypass's hooks don't match
+    whatever app build is currently installed — usually a build was updated without updating the
+    bypass to match (R8 reobfuscates every release, so old hooks silently stop working)."""
+
+
 class UINavigationError(ControlError):
     """Couldn't reach / confirm the Advanced Remote panel — refuse to tap rather than guess."""
 
@@ -321,9 +332,27 @@ def _dismiss_caution_dialog(max_wait: float = 6.0) -> bool:
 
 # --------------------------------------------------------------------------- navigation guard
 
+#   Both of these show up as `SplashActivity` with a specific dialog, text, and nothing else on
+#   screen — the app never advances itself (no retry recovers). Checked once per activity-check,
+#   not on every nodes-dump, since they're the only two Splash states worth paying a UI dump for.
+_UPDATE_WALL_TEXT = "App Update Available"
+_ROOTED_WALL_TEXT = "does not support rooted devices"
+
+
 def _assert_logged_in(activity: str) -> None:
     if "LoginActivity" in activity or "FRMainActivity" in activity:
         raise NotLoggedIn("app is signed out (login/OTP screen) — re-auth required before any command")
+    if "SplashActivity" in activity:
+        nodes = _nodes(_ui_dump())
+        if _find_text(nodes, _UPDATE_WALL_TEXT, contains=True):
+            raise UpdateRequired(
+                "Toyota is refusing the installed app version and won't go past the update screen"
+            )
+        if _find_text(nodes, _ROOTED_WALL_TEXT, contains=True):
+            raise RootedDevice(
+                "the app is showing its rooted-device wall — the frida bypass doesn't match the "
+                "currently installed app build"
+            )
 
 
 def _ensure_dashboard() -> list[dict]:

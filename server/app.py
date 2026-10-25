@@ -354,11 +354,51 @@ def _run_bg(fn, *args) -> None:
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
+# Blocking screens (signed-out / update wall / rooted-device wall) don't self-clear, so a burst of
+# commands arriving while one is up would otherwise text the owner once per failed command. One
+# alert per reason per cooldown window is enough to say "come look" without being noise.
+_ALERT_COOLDOWN_SECONDS = int(os.environ.get("ALERT_COOLDOWN_SECONDS", str(30 * 60)))
+_last_alert_at: dict[str, float] = {}
+
+
+def _alert_operator(reason: str, detail: str) -> None:
+    """Tell the owner the rig hit a state no retry will clear, so they go look instead of finding
+    out only when a command silently fails. `reason` is a short stable tag (one per blocking-screen
+    type) used for the per-reason cooldown; `detail` is what actually goes in the text."""
+    now = time.time()
+    last = _last_alert_at.get(reason, 0.0)
+    if now - last < _ALERT_COOLDOWN_SECONDS:
+        logger.info("alert '%s' suppressed (sent %ds ago, cooldown %ds)", reason, int(now - last), _ALERT_COOLDOWN_SECONDS)
+        return
+    _last_alert_at[reason] = now
+    if not ALLOWED_NUMBERS:
+        logger.error("can't alert the operator — ALLOWED_NUMBERS is empty")
+        return
+    for number in ALLOWED_NUMBERS:
+        _run_bg(deliver, number, f"[Toyota rig] {detail}")
+
+
+def _blocking_screen_reply(e: tc.ControlError, verb: str) -> str:
+    """Owner-facing sentence for a blocking-screen exception, AND fires the one-per-cooldown
+    operator alert. `verb` reads naturally into "... before I can {verb}." (e.g. "read status",
+    "send commands")."""
+    if isinstance(e, tc.NotLoggedIn):
+        reason, text = "signed_out", "the app is signed out and needs re-authentication"
+    elif isinstance(e, tc.UpdateRequired):
+        reason, text = "update_required", "Toyota is refusing the installed app version (update wall)"
+    elif isinstance(e, tc.RootedDevice):
+        reason, text = "rooted_dialog", "the app's rooted-device wall is up (bypass needs re-matching to the installed build)"
+    else:
+        reason, text = "control_error", str(e)
+    _alert_operator(reason, f"Car commands are blocked: {text}. Needs the rig looked at.")
+    return f"Car app problem: {text}, before I can {verb}. The operator has been alerted."
+
+
 def _do_status(to: str, token: int | None = None) -> None:
     try:
         reply = tc.format_status(tc.read_status())
-    except tc.NotLoggedIn:
-        reply = "The car app is signed out and needs re-authentication. The operator has been alerted."
+    except (tc.NotLoggedIn, tc.UpdateRequired, tc.RootedDevice) as e:
+        reply = _blocking_screen_reply(e, "read status")
     except tc.ControlError as e:
         reply = f"Couldn't read status: {e}"
     except Exception as e:  # never let the thread die silently
@@ -384,9 +424,8 @@ def _attempt(command: str) -> tuple[str, str, str]:
     pretty = command.replace("_", " ")
     try:
         since_ms = tc.execute(command)
-    except tc.NotLoggedIn:
-        return ("The car app is signed out and needs re-authentication before I can send "
-                "commands. The operator has been alerted."), "failed", ""
+    except (tc.NotLoggedIn, tc.UpdateRequired, tc.RootedDevice) as e:
+        return _blocking_screen_reply(e, "send commands"), "failed", ""
     except tc.CommandNotApplicable as e:
         return str(e), "failed", ""  # already a complete sentence for the owner
     except tc.ControlError as e:
