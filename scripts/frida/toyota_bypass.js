@@ -1,13 +1,37 @@
 /*
- * Toyota OneApp (com.toyota.oneapp v3.5.0) — MINIMAL client-side root/emulator bypass.
- * ONLY neutralizes Lock #1 (the root/emulator/tamper self-destruct), which genuinely
- * cannot "pass" on a rooted emulator. Does NOT fake the device-PIN check — we want to
- * test whether a REAL, cleanly-set device PIN satisfies the app on its own.
+ * Toyota OneApp (com.toyota.oneapp v3.6.0, vc 222) — client-side root/emulator bypass.
+ * VERIFIED end-to-end on 2026-10-25: reaches OADashboardActivity, logged in, session intact,
+ * all 9 remote command resource-ids unchanged from 3.5.0 (only this bypass needed updating).
  *
- * Targets (from jadx):
- *   tr.g implements tr.b: b()=compromised(root||emu||tamper), c()=emulator -> force FALSE.
- *   com.toyota.oneapp.core.v implements BuildWrapper; k() debug-bypass -> force TRUE.
- *   vr.d.c(Activity) is the killer: finish()+killProcess()+System.exit(1) -> neuter.
+ * 3.6.0 re-ran R8, so every obfuscated name the 3.5.0 bypass (toyota_bypass_350.js) targeted
+ * (tr.g, tr.i/l/n, com.toyota.oneapp.core.v, vr.d) no longer exists under those names and the
+ * old hooks silently no-op -- the app shows "does not support rooted devices" exactly as if no
+ * bypass were attached. Found by decompiling both the 3.5.0 and 3.6.0 base.apk with jadx and
+ * diffing by STRUCTURE rather than by name (names reset every build; the "security" Gradle
+ * module name survives in Kotlin @Metadata tags though, which is what led here). jadx failed to
+ * decompile the two classes that matter most (complex Kotlin coroutine state machines) -- those
+ * were identified live instead, via Frida reflection and Java.choose on running instances.
+ *
+ * Architecture (package `vs` = detector interfaces, `ws` = concrete leaf detectors):
+ *   vs.g implements vs.b : the top-level checker (3-method a/b/c shape, same as the OLD tr.g).
+ *                   SecurityActivity reads deviceIntegrityChecker.b() as "isDeviceCompromised".
+ *                   Found via Java.choose on a live DeviceIntegrityMonitorImpl instance's own
+ *                   `vs.b`-typed field -- jadx produced an empty file for vs.g, same decompile
+ *                   failure as DeviceIntegrityMonitorImpl itself.
+ *   ws.a implements vs.j : KeyguardManager.isDeviceSecure() -- LEFT ALONE (real PIN state),
+ *                   same convention as the old tr.g.a().
+ *   ws.r/t/v/w/x  : leaf detectors (emulator / install-source / root-helper-binary /
+ *                   root-management-app / su-path). Hooking these ALONE was NOT sufficient --
+ *                   vs.g computes its answer some other way too -- so vs.g is hooked directly;
+ *                   the leaf hooks stay as defense in depth, same layered approach as 3.5.0.
+ *   DeviceIntegrityMonitorImpl (real name survived R8) -> xs.a.display()/xs.a.a(Activity) is
+ *                   the actual dialog-and-kill path, an ONGOING monitor rather than a one-time
+ *                   splash-time gate. It's the direct equivalent of the 3.5.0 bypass's vr.d
+ *                   kill-switch. NOT hooked here: with vs.g already returning "not compromised",
+ *                   the monitor never calls it, and neutering it directly (tried first) left the
+ *                   app on a blank screen after a successful-looking dialog suppression -- some
+ *                   downstream state apparently expects it to actually run. Hooking the decision
+ *                   (vs.g) instead of the display call avoided that entirely.
  */
 Java.perform(function () {
     function hook(cls, method, retVal) {
@@ -24,23 +48,20 @@ Java.perform(function () {
         }
     }
 
-    // Lock #1 only: not-compromised, not-emulator. (a() = "is secure" is LEFT ALONE
-    // so the app reads the real device PIN state.)
-    hook("tr.g", "b", false);
-    hook("tr.g", "c", false);
+    // The actual top-level gate. a() ("is secure") is deliberately left alone.
+    hook("vs.g", "b", false);
+    hook("vs.g", "c", false);
 
-    // Debug master-bypass BuildWrapper.k() -> true (short-circuits the compromised check)
-    hook("com.toyota.oneapp.core.v", "k", true);
+    // Leaf detectors -> force "not detected", defense in depth. ws.a (device-secure/PIN) is
+    // deliberately NOT touched, same intent as the old script: let the app read the real PIN.
+    hook("ws.r", "a", false);   // emulator (genyd/qemud/vbox86/nox/andy marker files+sockets)
+    hook("ws.t", "a", false);   // install source isn't com.android.vending/Play-family
+    hook("ws.v", "a", false);   // root helper binaries (/system/xbin/which, "startup")
+    hook("ws.w", "a", false);   // known root-management apps (SuperSU etc, by package id)
+    hook("ws.x", "a", false);   // su binary paths
 
-    // Individual root/emulator/tamper detectors -> false
-    ["tr.i", "tr.l", "tr.n"].forEach(function (c) { hook(c, "a", false); });
-
-    // Neuter the killer dialog's exit path, and block exit/kill app-wide (safety net
-    // so a stray check can't nuke the app; does NOT suppress the PIN dialog itself)
-    try {
-        var D = Java.use("vr.d");
-        D.c.implementation = function (activity) { console.log("[bypass] vr.d.c() kill suppressed"); };
-    } catch (e) { console.log("[warn] vr.d.c hook: " + e); }
+    // Safety net: block exit/kill app-wide so a stray check we haven't found can't nuke the
+    // app. Stable platform API names -- unaffected by this build's obfuscation.
     try {
         var Sys = Java.use("java.lang.System");
         Sys.exit.implementation = function (code) { console.log("[bypass] System.exit(" + code + ") blocked"); };
@@ -48,27 +69,16 @@ Java.perform(function () {
         P.killProcess.implementation = function (pid) { console.log("[bypass] killProcess(" + pid + ") blocked"); };
     } catch (e) { console.log("[warn] exit/kill hook: " + e); }
 
-    console.log("[bypass] Lock#1-only hooks installed (no PIN faking, no proxy suppression).");
+    console.log("[bypass-360] vs.g + leaf-detector hooks installed (ws.a left alone).");
 
-    // Enable ForgeRock SDK verbose logging to expose why sign-in (FRMainActivity) closes
+    // Enable ForgeRock SDK verbose logging, same as the 3.5.0 script (unrelated vendored SDK,
+    // package name not app-obfuscated).
     try {
         var L = Java.use("org.forgerock.android.auth.Logger");
         var Lvl = Java.use("org.forgerock.android.auth.Logger$Level");
         L.set(Lvl.DEBUG.value);
         console.log("[bypass] ForgeRock Logger set to DEBUG");
     } catch (e) { console.log("[warn] FR logger: " + e); }
-
-    // Capture any ForgeRock auth exception/failure
-    ["org.forgerock.android.auth.FRListener"].forEach(function(c){
-        try {
-            var C = Java.use(c);
-            if (C.onException) C.onException.implementation = function(ex){
-                console.log("[FR-EXCEPTION] " + ex);
-                try { console.log(Java.use("android.util.Log").getStackTraceString(ex)); } catch(e){}
-                return this.onException(ex);
-            };
-        } catch(e){}
-    });
 
     // Read-only diagnostic: what does the REAL device report now?
     setTimeout(function () {
@@ -80,10 +90,6 @@ Java.perform(function () {
                 var km = Java.cast(ctx.getSystemService("keyguard"), KM);
                 console.log("[probe] REAL isDeviceSecure()=" + km.isDeviceSecure() +
                             " isKeyguardSecure()=" + km.isKeyguardSecure());
-                var S = Java.use("java.lang.System");
-                console.log("[probe] http.proxyHost=" + S.getProperty("http.proxyHost") +
-                            " http.proxyPort=" + S.getProperty("http.proxyPort") +
-                            " https.proxyHost=" + S.getProperty("https.proxyHost"));
             } catch (e) { console.log("[probe] err " + e); }
         });
     }, 3000);

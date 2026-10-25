@@ -22,7 +22,52 @@ setup is in `README.md`.
 simulated UI tap in the real app.** Network/Frida tooling is **read-only**, for debugging only. This is
 non-negotiable; it is the entire reason for the emulator approach. (See memory `toyota-hard-boundary-ui-only`.)
 
-## Where we are RIGHT NOW (2026-10-06) — THE SMS→CAR BRIDGE IS WORKING END-TO-END
+## Where we are RIGHT NOW (2026-10-25) — ON ONEAPP 3.6.0, VERIFIED LIVE
+
+**Production is running OneApp 3.6.0 (vc 222), not 3.5.0.** Toyota force-pushed an in-app update wall
+("App Update Available") sometime before 2026-10-23 that blocked every command (root-detection dialog,
+since the 3.5.0 frida bypass's hooks target names that don't exist in 3.6.0 — R8 reobfuscates every
+build). Fixed by decompiling both builds with jadx and diffing by code STRUCTURE rather than by name
+(names reset every build) — full writeup is the `toyota_bypass.js` file header. The working bypass is
+**`scripts/frida/toyota_bypass.js`** (the 3.5.0 one is archived as `toyota_bypass_350.js`). Command
+resource-ids are byte-identical between builds — `server/toyota_control.py` needed zero changes.
+
+**VERIFIED LIVE END-TO-END (2026-10-25):** installed 3.6.0 over the running production emulator, cut the
+bypass over, signed back in (Toyota's periodic forced-reauth — *"For your security, you have been signed
+out"* — hit right at the same time; unrelated to the version bump, handled interactively over the rig's
+VNC so credentials never passed through the assistant), then ran real commands through the real webhook:
+`Status` → *"Yosef's Camry: Range: 6 mi..."*, `Lock` → *"2025 Camry Hybrid: The vehicle is now locked.
+[DL1]"* — both the car's own confirmation, both via the actual SMS pipeline. `Start` was not live-tested
+(runs the engine ~10 min) but shares the exact tap/confirm path `Lock` proved.
+
+**★ INCIDENT, same session:** testing 3.6.0 on a cloned AVD alongside the running production one (to
+preview the update before committing to it) ran both emulators concurrently for over an hour on this VM
+size, and production's emulator aborted under the combined load (~06:56 UTC) — a `rig-supervisor.sh` not
+yet carrying the serial-pinning fix below got stuck waiting on a vanished device. ~38 min outage, fixed by
+killing the clone and a clean `systemctl restart toyota-rig`. **Lesson: don't run a clone alongside
+production for extended work on this VM size** — size up first, or keep clone sessions short and tear
+them down between iterations.
+
+**★ `rig-supervisor.sh` now pins every adb/frida call to an explicit serial** (`emulator-5554` by
+default), discovered by the incident above: adb's emulator auto-discovery scans the console port range
+globally regardless of which adb-server instance you're on, so a second emulator makes every bare `adb
+shell` ambiguous and `frida -U` pick whichever device it likes. The boot-time `pkill` is also now scoped
+to this AVD's own process rather than killing any emulator on the box.
+
+**★ Nightly FCM-refresh timer is live:** `toyota-fcm-refresh.timer` (04:00 America/New_York) force-stops
+the app so its FCM push registration re-establishes before it goes stale — two outages (2026-10-11,
+2026-10-15..23) were silently fixed by exactly this, done by hand; now automated. Script is
+`scripts/host/fcm-refresh.sh`; the systemd unit was installed directly on the VM (not via the deploy
+pipeline) and isn't itself tracked in the repo yet.
+
+**★ TextGrid content-filter resend bug fixed:** `deliver()` in `server/app.py` compared TextGrid's full
+status string against `"failed"`, but TextGrid returns `"failed - Blocked by Textgrid Content Filter"` —
+the comparison never matched, so the resend-on-failure path (added specifically for this failure mode)
+never once fired. Three car confirmations were silently lost this way (2026-10-12..14) before today's fix.
+
+---
+
+## Where we were (2026-10-06) — THE SMS→CAR BRIDGE IS WORKING END-TO-END
 
 Text a keyword to the TextGrid number and the real car responds, with a real confirmation reply. Verified
 live: `TOYOTA LOCK` → car locked → reply *"2025 Camry Hybrid: The vehicle is now locked. [DL1]"*.
@@ -201,8 +246,27 @@ gitignore — see memory `gitignore-no-inline-comments`). Repo is public (portfo
 - Document everything durably (that's why these docs + memories exist).
 - Be decisive and act; screenshot often; keep the public README clean (gotchas go in `docs/`).
 
+## Recognizing rig failure/state screens (seed data for a future watchdog)
+
+Every one of these was diagnosed by a human staring at a screenshot at some point. They don't need to be
+again — each has a distinct, checkable signature. The goal is for a watchdog to eventually walk this list
+automatically (`dumpsys window | grep mCurrentFocus` + a targeted `journalctl` grep, no screenshot needed)
+and either self-heal or alert with the right diagnosis already attached. Add to this table every time a
+new failure mode gets identified by hand — that's the whole point.
+
+| Symptom | Signature (how to detect it) | What it means | Fix |
+|---|---|---|---|
+| **Forced update wall** | `mCurrentFocus` stuck on `.ui.splash.SplashActivity`; screen text *"App Update Available" / "Download the latest version" / "Update Now"* | Toyota's backend now requires a newer app version than what's installed | Pull the new version (`apkeep` via APKPure first — free, no account risk; only use a Google-authenticated puller like `gplay-apk-downloader` if the public mirror doesn't have it yet), `adb install-multiple -r` it in place, and expect the frida bypass to need re-matching (see next row) — R8 reobfuscates every build, so old hooks silently no-op |
+| **Root-detection dialog** | `mCurrentFocus` stuck on `.ui.splash.SplashActivity`; screen text *"The Toyota app does not support rooted devices."*, an OK button, no other content | The frida bypass's hooked class/method names don't match the **installed** app version (stale bypass after an update, or testing a build for the first time) | Decompile the running `base.apk` (`adb shell pm path` → `adb pull` → `jadx`) and diff by **code structure**, not name, against the last-known-working bypass's own header comments (which document exactly what shape each hook target has — see `toyota_bypass.js`'s header for the current map). `jadx` silently fails on some classes (complex Kotlin coroutine state machines); when a file comes back empty, inspect the class live via Frida reflection (`Java.use(cls).class.getDeclaredMethods()`) or `Java.choose` on a live instance instead of trusting the decompile |
+| **Forced re-login** | `mCurrentFocus` on `.ui.LoginActivity`; screen text *"For your security, you have been signed out. Sign back in to continue using the app."*, Sign In / Register / Biometric buttons over a car photo | Toyota's periodic server-side session expiry — the #1 unattended-operation limiter, "Keep me signed in" only reduces frequency, doesn't eliminate it. **Not necessarily caused by anything the rig did** — can coincide with an app update or a crash/recovery cycle without being caused by either | Needs a human: open the rig's VNC (`scripts/host` start-vnc pattern — Xvfb + x11vnc + websockify on the production display, tunnel port 6080 through IAP) and sign in there so credentials never pass through an assistant session. No OTP-relay exists yet (still on the NEXT list) |
+| **Cold-start splash hang** | `mCurrentFocus` stuck on `.ui.splash.SplashActivity`; **no dialog text at all**, just the logo, persisting well past normal boot time | Known quirk after an emulator reboot | `systemctl restart toyota-rig` once, or at minimum `am force-stop` + let the supervisor respawn |
+| **FCM push registration stale** | Commands still work (UI taps succeed) but every reply degrades to *"accepted by the Toyota app, but the car's own confirmation didn't arrive"*; journal shows no `local#app#remote_*_success` lines either | This emulator's FCM token needs re-registration (per-install, not a Toyota/Google outage — the owner's own phone staying connected proves nothing about this device) | `adb shell am force-stop com.toyota.oneapp`, let the supervisor respawn. **Now automated nightly** via `toyota-fcm-refresh.timer` (04:00 America/New_York) so it shouldn't recur silently |
+| **TextGrid content filter eating a reply** | `journalctl -u toyota-sms` shows a message status of `failed - Blocked by Textgrid Content Filter` (NOT bare `"failed"` — matters for any code or grep comparing against it) | TextGrid silently drops an outbound reply after accepting it with 201; looks velocity/pattern-based, not static content (same exact text has been both blocked and delivered on different sends) | **Now automated**: `deliver()` resends once with a timestamp appended. Reported to TextGrid support 2026-10-25, no response yet |
+| **Resource-contention crash** | `journalctl -u toyota-rig` shows `Fatal Python error: _enter_buffered_busy` / the qemu-system process line ending `Aborted`, around a time two emulators were running at once | The VM ran out of some combination of RAM/CPU/software-GL headroom with two emulators up (production + a clone) | Kill the extra emulator, `systemctl restart toyota-rig`. **Don't run a clone alongside production for extended work on an n2-standard-8** — this crashed a production session on 2026-10-25 after ~1hr of concurrent use. Size up first, or keep clone sessions short and torn down between iterations |
+| **Wrong-device / ambiguous-adb risk** | `adb`/`frida -U` errors with "more than one device/emulator", or a frida session silently attaches to the wrong emulator id in the log | A second emulator is visible to the SAME adb-server instance — adb's emulator auto-discovery scans the console port range globally, **regardless of which `ANDROID_ADB_SERVER_PORT` you're on**; a separate adb-server port does NOT give isolation on its own | **Largely prevented now**: `rig-supervisor.sh` pins every call to an explicit `$SERIAL`. Still worth checking the log line literally says `Connected to Android Emulator <expected-serial>` after any respawn, not just that *a* session came up |
+| **False-negative process probe** | `adb shell pgrep -af com.toyota.oneapp` reports the app as not running while `ps -A \| grep` on the same device shows it very much alive | `pgrep -af` is unreliable on this build for reasons never fully pinned down — it's sent at least one investigation the wrong way already | **Always use `ps -A \| grep`** to check whether the Toyota app process exists, never `pgrep` |
+
 ## Operational risks to remember
 - **Session/OTP re-auth** is the #1 unattended-operation limiter: the app periodically force-signs-out and
   needs an OTP (human in loop). "Keep me signed in" is ticked to reduce frequency. Design the SMS OTP-relay.
-- **Cold-start splash hang** after reboot → restart the app once (watchdog should automate).
 - **Remote Connect subscription** was flagged "expiring".

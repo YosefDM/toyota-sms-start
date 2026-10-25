@@ -319,8 +319,11 @@ def deliver(to: str, body: str) -> None:
     TextGrid accepts the POST (HTTP 201) and only then runs its content filter, so a blocked reply
     looked like a success here and vanished silently: on 2026-10-06 two identical "Vehicle was
     started..." confirmations came back "failed - Blocked by Textgrid Content Filter" and the owner
-    was never told anything. The same wording delivered fine before and after, so the trigger is
-    duplicate content — the resend carries a timestamp to make it unique.
+    was never told anything. The resend carries a timestamp so the retry isn't byte-identical.
+
+    What trips the filter is still unknown and is NOT simply duplicate content: the carrier log for
+    2026-10-12..14 shows the very same "The vehicle is now locked. [DL1]" delivered on the 12th and
+    blocked on the 14th, so it behaves more like a velocity or sampling rule than a content rule.
     """
     sid = send_sms(to, body)
     if not sid:
@@ -332,9 +335,14 @@ def deliver(to: str, body: str) -> None:
     for wait in (6, 10, 20, 30):
         time.sleep(wait)
         status, err = _message_status(sid)
-        if status in ("delivered", "sent"):
+        # TextGrid appends the reason to the status itself ("failed - Blocked by Textgrid Content
+        # Filter"), so comparing the whole string never matched "failed" and the resend below — the
+        # entire point of this function — never once fired. Three car confirmations were lost that
+        # way (2026-10-12..14) while the log claimed only "delivery unconfirmed". Match the verb.
+        verdict = status.split(" - ", 1)[0].strip().lower()
+        if verdict in ("delivered", "sent"):
             return
-        if status in ("failed", "undelivered"):
+        if verdict in ("failed", "undelivered"):
             logger.error("reply sid=%s was not delivered (status=%s err=%s) — resending", sid, status, err)
             send_sms(to, f"{body} ({time.strftime('%H:%M')})")
             return
@@ -346,11 +354,51 @@ def _run_bg(fn, *args) -> None:
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
+# Blocking screens (signed-out / update wall / rooted-device wall) don't self-clear, so a burst of
+# commands arriving while one is up would otherwise text the owner once per failed command. One
+# alert per reason per cooldown window is enough to say "come look" without being noise.
+_ALERT_COOLDOWN_SECONDS = int(os.environ.get("ALERT_COOLDOWN_SECONDS", str(30 * 60)))
+_last_alert_at: dict[str, float] = {}
+
+
+def _alert_operator(reason: str, detail: str) -> None:
+    """Tell the owner the rig hit a state no retry will clear, so they go look instead of finding
+    out only when a command silently fails. `reason` is a short stable tag (one per blocking-screen
+    type) used for the per-reason cooldown; `detail` is what actually goes in the text."""
+    now = time.time()
+    last = _last_alert_at.get(reason, 0.0)
+    if now - last < _ALERT_COOLDOWN_SECONDS:
+        logger.info("alert '%s' suppressed (sent %ds ago, cooldown %ds)", reason, int(now - last), _ALERT_COOLDOWN_SECONDS)
+        return
+    _last_alert_at[reason] = now
+    if not ALLOWED_NUMBERS:
+        logger.error("can't alert the operator — ALLOWED_NUMBERS is empty")
+        return
+    for number in ALLOWED_NUMBERS:
+        _run_bg(deliver, number, f"[Toyota rig] {detail}")
+
+
+def _blocking_screen_reply(e: tc.ControlError, verb: str) -> str:
+    """Owner-facing sentence for a blocking-screen exception, AND fires the one-per-cooldown
+    operator alert. `verb` reads naturally into "... before I can {verb}." (e.g. "read status",
+    "send commands")."""
+    if isinstance(e, tc.NotLoggedIn):
+        reason, text = "signed_out", "the app is signed out and needs re-authentication"
+    elif isinstance(e, tc.UpdateRequired):
+        reason, text = "update_required", "Toyota is refusing the installed app version (update wall)"
+    elif isinstance(e, tc.RootedDevice):
+        reason, text = "rooted_dialog", "the app's rooted-device wall is up (bypass needs re-matching to the installed build)"
+    else:
+        reason, text = "control_error", str(e)
+    _alert_operator(reason, f"Car commands are blocked: {text}. Needs the rig looked at.")
+    return f"Car app problem: {text}, before I can {verb}. The operator has been alerted."
+
+
 def _do_status(to: str, token: int | None = None) -> None:
     try:
         reply = tc.format_status(tc.read_status())
-    except tc.NotLoggedIn:
-        reply = "The car app is signed out and needs re-authentication. The operator has been alerted."
+    except (tc.NotLoggedIn, tc.UpdateRequired, tc.RootedDevice) as e:
+        reply = _blocking_screen_reply(e, "read status")
     except tc.ControlError as e:
         reply = f"Couldn't read status: {e}"
     except Exception as e:  # never let the thread die silently
@@ -376,9 +424,8 @@ def _attempt(command: str) -> tuple[str, str, str]:
     pretty = command.replace("_", " ")
     try:
         since_ms = tc.execute(command)
-    except tc.NotLoggedIn:
-        return ("The car app is signed out and needs re-authentication before I can send "
-                "commands. The operator has been alerted."), "failed", ""
+    except (tc.NotLoggedIn, tc.UpdateRequired, tc.RootedDevice) as e:
+        return _blocking_screen_reply(e, "send commands"), "failed", ""
     except tc.CommandNotApplicable as e:
         return str(e), "failed", ""  # already a complete sentence for the owner
     except tc.ControlError as e:
