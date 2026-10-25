@@ -319,8 +319,11 @@ def deliver(to: str, body: str) -> None:
     TextGrid accepts the POST (HTTP 201) and only then runs its content filter, so a blocked reply
     looked like a success here and vanished silently: on 2026-10-06 two identical "Vehicle was
     started..." confirmations came back "failed - Blocked by Textgrid Content Filter" and the owner
-    was never told anything. The same wording delivered fine before and after, so the trigger is
-    duplicate content — the resend carries a timestamp to make it unique.
+    was never told anything. The resend carries a timestamp so the retry isn't byte-identical.
+
+    What trips the filter is still unknown and is NOT simply duplicate content: the carrier log for
+    2026-10-12..14 shows the very same "The vehicle is now locked. [DL1]" delivered on the 12th and
+    blocked on the 14th, so it behaves more like a velocity or sampling rule than a content rule.
     """
     sid = send_sms(to, body)
     if not sid:
@@ -332,9 +335,14 @@ def deliver(to: str, body: str) -> None:
     for wait in (6, 10, 20, 30):
         time.sleep(wait)
         status, err = _message_status(sid)
-        if status in ("delivered", "sent"):
+        # TextGrid appends the reason to the status itself ("failed - Blocked by Textgrid Content
+        # Filter"), so comparing the whole string never matched "failed" and the resend below — the
+        # entire point of this function — never once fired. Three car confirmations were lost that
+        # way (2026-10-12..14) while the log claimed only "delivery unconfirmed". Match the verb.
+        verdict = status.split(" - ", 1)[0].strip().lower()
+        if verdict in ("delivered", "sent"):
             return
-        if status in ("failed", "undelivered"):
+        if verdict in ("failed", "undelivered"):
             logger.error("reply sid=%s was not delivered (status=%s err=%s) — resending", sid, status, err)
             send_sms(to, f"{body} ({time.strftime('%H:%M')})")
             return
