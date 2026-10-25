@@ -22,7 +22,52 @@ setup is in `README.md`.
 simulated UI tap in the real app.** Network/Frida tooling is **read-only**, for debugging only. This is
 non-negotiable; it is the entire reason for the emulator approach. (See memory `toyota-hard-boundary-ui-only`.)
 
-## Where we are RIGHT NOW (2026-10-06) — THE SMS→CAR BRIDGE IS WORKING END-TO-END
+## Where we are RIGHT NOW (2026-10-25) — ON ONEAPP 3.6.0, VERIFIED LIVE
+
+**Production is running OneApp 3.6.0 (vc 222), not 3.5.0.** Toyota force-pushed an in-app update wall
+("App Update Available") sometime before 2026-10-23 that blocked every command (root-detection dialog,
+since the 3.5.0 frida bypass's hooks target names that don't exist in 3.6.0 — R8 reobfuscates every
+build). Fixed by decompiling both builds with jadx and diffing by code STRUCTURE rather than by name
+(names reset every build) — full writeup is the `toyota_bypass.js` file header. The working bypass is
+**`scripts/frida/toyota_bypass.js`** (the 3.5.0 one is archived as `toyota_bypass_350.js`). Command
+resource-ids are byte-identical between builds — `server/toyota_control.py` needed zero changes.
+
+**VERIFIED LIVE END-TO-END (2026-10-25):** installed 3.6.0 over the running production emulator, cut the
+bypass over, signed back in (Toyota's periodic forced-reauth — *"For your security, you have been signed
+out"* — hit right at the same time; unrelated to the version bump, handled interactively over the rig's
+VNC so credentials never passed through the assistant), then ran real commands through the real webhook:
+`Status` → *"Yosef's Camry: Range: 6 mi..."*, `Lock` → *"2025 Camry Hybrid: The vehicle is now locked.
+[DL1]"* — both the car's own confirmation, both via the actual SMS pipeline. `Start` was not live-tested
+(runs the engine ~10 min) but shares the exact tap/confirm path `Lock` proved.
+
+**★ INCIDENT, same session:** testing 3.6.0 on a cloned AVD alongside the running production one (to
+preview the update before committing to it) ran both emulators concurrently for over an hour on this VM
+size, and production's emulator aborted under the combined load (~06:56 UTC) — a `rig-supervisor.sh` not
+yet carrying the serial-pinning fix below got stuck waiting on a vanished device. ~38 min outage, fixed by
+killing the clone and a clean `systemctl restart toyota-rig`. **Lesson: don't run a clone alongside
+production for extended work on this VM size** — size up first, or keep clone sessions short and tear
+them down between iterations.
+
+**★ `rig-supervisor.sh` now pins every adb/frida call to an explicit serial** (`emulator-5554` by
+default), discovered by the incident above: adb's emulator auto-discovery scans the console port range
+globally regardless of which adb-server instance you're on, so a second emulator makes every bare `adb
+shell` ambiguous and `frida -U` pick whichever device it likes. The boot-time `pkill` is also now scoped
+to this AVD's own process rather than killing any emulator on the box.
+
+**★ Nightly FCM-refresh timer is live:** `toyota-fcm-refresh.timer` (04:00 America/New_York) force-stops
+the app so its FCM push registration re-establishes before it goes stale — two outages (2026-10-11,
+2026-10-15..23) were silently fixed by exactly this, done by hand; now automated. Script is
+`scripts/host/fcm-refresh.sh`; the systemd unit was installed directly on the VM (not via the deploy
+pipeline) and isn't itself tracked in the repo yet.
+
+**★ TextGrid content-filter resend bug fixed:** `deliver()` in `server/app.py` compared TextGrid's full
+status string against `"failed"`, but TextGrid returns `"failed - Blocked by Textgrid Content Filter"` —
+the comparison never matched, so the resend-on-failure path (added specifically for this failure mode)
+never once fired. Three car confirmations were silently lost this way (2026-10-12..14) before today's fix.
+
+---
+
+## Where we were (2026-10-06) — THE SMS→CAR BRIDGE IS WORKING END-TO-END
 
 Text a keyword to the TextGrid number and the real car responds, with a real confirmation reply. Verified
 live: `TOYOTA LOCK` → car locked → reply *"2025 Camry Hybrid: The vehicle is now locked. [DL1]"*.
